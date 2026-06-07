@@ -370,7 +370,13 @@ export function PlaylistPlayer({
           </div>
 
           <div className="playlist-controls-row">
-            <button type="button" className="playlist-bar-btn" onClick={prev} title="前へ (←)" aria-label="前へ">
+            <button
+              type="button"
+              className="playlist-bar-btn"
+              onClick={prev}
+              title="前へ (←)"
+              aria-label="前へ"
+            >
               <SkipBack size={20} aria-hidden />
             </button>
             <button
@@ -382,7 +388,13 @@ export function PlaylistPlayer({
             >
               {paused ? <Play size={22} aria-hidden /> : <Pause size={22} aria-hidden />}
             </button>
-            <button type="button" className="playlist-bar-btn" onClick={next} title="次へ (→)" aria-label="次へ">
+            <button
+              type="button"
+              className="playlist-bar-btn"
+              onClick={next}
+              title="次へ (→)"
+              aria-label="次へ"
+            >
               <SkipForward size={20} aria-hidden />
             </button>
 
