@@ -31,7 +31,42 @@ sora-viewer/
 ### 必要環境
 
 - **Node.js** v18+
-- **ffmpeg** (サムネイル生成に使用)
+- **ffmpeg** — サムネイル生成に使用（後述）
+
+### ffmpeg のインストール
+
+サムネイル生成に `ffmpeg` コマンドが必要です。インストールされていない場合、サムネイルは表示されず代替UIが表示されます（動画自体の再生には影響なし）。
+
+```bash
+# macOS (Homebrew)
+brew install ffmpeg
+
+# Ubuntu / Debian
+sudo apt install ffmpeg
+
+# Windows (Chocolatey)
+choco install ffmpeg
+
+# 確認
+ffmpeg -version
+```
+
+#### ffmpeg の使われ方
+
+サーバー (`server/index.ts`) がサムネイル API `/thumbnail/:id` のリクエスト時に以下を実行します：
+
+```bash
+ffmpeg -i mov/{id}.mp4 -ss 0.5 -vframes 1 -vf scale=480:-2 -q:v 6 -y .thumbs/{id}.jpg
+```
+
+| オプション | 説明 |
+|-----------|------|
+| `-ss 0.5` | 動画の 0.5 秒目のフレームを取得 |
+| `-vframes 1` | 1フレームだけ出力 |
+| `-vf scale=480:-2` | 幅 480px にリサイズ（アスペクト比維持） |
+| `-q:v 6` | JPEG 品質（2=高品質 〜 31=低品質） |
+
+生成されたサムネイルは `.thumbs/` にキャッシュされ、2回目以降は ffmpeg を呼ばずキャッシュから返します。
 
 ### インストール
 
@@ -59,13 +94,15 @@ json/
 
 `mov/` に対応する MP4 ファイルを配置（ファイル名は `{generation_id}.mp4`）
 
+> **Note:** 複数 JSON に同じ generation ID が含まれている場合、自動的に重複排除されます。
+
 ### 起動
 
 ```bash
 npm run dev
 ```
 
-- **Vite (フロント)**: http://localhost:5173
+- **React (フロント)**: http://localhost:5173
 - **Hono (API)**: http://localhost:3001
 
 ## 機能
@@ -75,8 +112,10 @@ npm run dev
 | **サムネイル表示** | ffmpeg で動画の 0.5 秒目を JPEG に変換、`.thumbs/` にキャッシュ |
 | **無限スクロール** | 60 件ずつ段階的にロード（IntersectionObserver） |
 | **プロンプト検索** | ヘッダーの検索バーでプロンプトをインクリメンタル検索 |
+| **アバターフィルター** | プロンプト内の `@mention` を自動抽出、タグチップで複数選択フィルタリング |
 | **モーダル再生** | カードクリックで動画を音声付き再生（React Aria Components） |
 | **時系列ソート** | ID からタイムスタンプを抽出し、新しい順に表示 |
+| **重複排除** | 複数 JSON 間の同一 ID エントリを自動排除 |
 
 ## 環境変数
 

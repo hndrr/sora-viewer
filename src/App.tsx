@@ -51,6 +51,7 @@ export default function App() {
   const [all, setAll] = useState<Generation[]>([])
   const [query, setQuery] = useState('')
   const [selectedAvatars, setSelectedAvatars] = useState<Set<string>>(new Set())
+  const [showAvatars, setShowAvatars] = useState(false)
   const [loading, setLoading] = useState(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [selected, setSelected] = useState<Generation | null>(null)
@@ -126,6 +127,19 @@ export default function App() {
     <>
       <header style={S.header}>
         <span style={S.h1}>🎬 Sora Viewer</span>
+        {avatarList.length > 0 && (
+          <button
+            style={{
+              ...S.chip,
+              ...(selectedAvatars.size > 0 || showAvatars ? S.chipActive : {}),
+              display: 'inline-flex', gap: 4,
+            }}
+            onClick={() => setShowAvatars(v => !v)}
+          >
+            👤 Avatar{selectedAvatars.size > 0 && ` (${selectedAvatars.size})`}
+            <span style={{ fontSize: 9 }}>{showAvatars ? '▲' : '▼'}</span>
+          </button>
+        )}
         <input
           style={S.search}
           type="text"
@@ -139,7 +153,7 @@ export default function App() {
         </span>
       </header>
 
-      {avatarList.length > 0 && (
+      {showAvatars && avatarList.length > 0 && (
         <div style={S.filterBar}>
           {selectedAvatars.size > 0 && (
             <span
