@@ -64,6 +64,18 @@ function writeConfigFile(p: string, data: { jsonDir?: string; movDir?: string })
   }
 }
 
+function allowLocalCorsOrigin(origin: string): string | null {
+  if (!origin) return null;
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
+      ? origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // 指定フォルダの中身を数えて「正しいフォルダか」を設定画面で示す
 function countJson(dir?: string): number {
   if (!dirExists(dir)) return 0;
@@ -136,25 +148,29 @@ function loadManifest(jsonDir: string, movDir: string) {
 
   for (const name of fs.readdirSync(jsonDir).sort()) {
     const fullPath = path.join(jsonDir, name);
-    const stat = fs.statSync(fullPath);
+    try {
+      const stat = fs.statSync(fullPath);
 
-    if (stat.isFile() && name.endsWith('-generations.json') && !name.startsWith('._')) {
-      const raw = JSON.parse(fs.readFileSync(fullPath, 'utf-8')) as Record<string, unknown>[];
-      for (const e of raw) {
-        e._source = name;
-        e._local = mp4Set.has(e.id as string);
-      }
-      entries.push(...raw);
-    } else if (stat.isDirectory()) {
-      const genFile = path.join(fullPath, 'generations.json');
-      if (fs.existsSync(genFile)) {
-        const raw = JSON.parse(fs.readFileSync(genFile, 'utf-8')) as Record<string, unknown>[];
+      if (stat.isFile() && name.endsWith('-generations.json') && !name.startsWith('._')) {
+        const raw = JSON.parse(fs.readFileSync(fullPath, 'utf-8')) as Record<string, unknown>[];
         for (const e of raw) {
-          e._source = `${name}/generations.json`;
+          e._source = name;
           e._local = mp4Set.has(e.id as string);
         }
         entries.push(...raw);
+      } else if (stat.isDirectory()) {
+        const genFile = path.join(fullPath, 'generations.json');
+        if (fs.existsSync(genFile)) {
+          const raw = JSON.parse(fs.readFileSync(genFile, 'utf-8')) as Record<string, unknown>[];
+          for (const e of raw) {
+            e._source = `${name}/generations.json`;
+            e._local = mp4Set.has(e.id as string);
+          }
+          entries.push(...raw);
+        }
       }
+    } catch (e) {
+      console.warn(`Failed to process manifest entry ${name}:`, e);
     }
   }
 
@@ -305,10 +321,33 @@ interface AppConfig {
   ffprobe: string;
 }
 
+function parseVideoRange(range: string, size: number): { start: number; end: number } | null {
+  if (size <= 0 || !range.startsWith('bytes=')) return null;
+
+  const [startPart, endPart] = range.slice('bytes='.length).split('-', 2);
+  let start: number;
+  let end: number;
+
+  if (startPart === '') {
+    const suffixLength = Number.parseInt(endPart ?? '', 10);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null;
+    start = Math.max(size - suffixLength, 0);
+    end = size - 1;
+  } else {
+    start = Number.parseInt(startPart, 10);
+    end = endPart ? Number.parseInt(endPart, 10) : size - 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0) return null;
+  }
+
+  start = Math.max(0, Math.min(start, size - 1));
+  end = Math.max(start, Math.min(end, size - 1));
+  return { start, end };
+}
+
 function createApp(cfg: AppConfig) {
   const { state, thumbDir, configPath, distDir, ffmpeg, ffprobe } = cfg;
   const app = new Hono();
-  app.use('*', cors());
+  app.use('*', cors({ origin: allowLocalCorsOrigin }));
 
   function configStatus() {
     return {
@@ -469,9 +508,9 @@ function createApp(cfg: AppConfig) {
     const size = fs.statSync(fp).size;
     const range = c.req.header('range');
     if (range) {
-      const [s, e] = range.replace('bytes=', '').split('-');
-      const start = parseInt(s, 10);
-      const end = e ? parseInt(e, 10) : size - 1;
+      const parsedRange = parseVideoRange(range, size);
+      if (!parsedRange) return c.text('Range Not Satisfiable', 416);
+      const { start, end } = parsedRange;
       const chunk = end - start + 1;
       const stream = fs.createReadStream(fp, { start, end });
       return new Response(stream as unknown as ReadableStream, {

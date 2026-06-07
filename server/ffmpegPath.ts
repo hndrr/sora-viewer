@@ -1,6 +1,6 @@
-import { execFileSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 /**
  * ffmpeg / ffprobe の実行ファイルを探索する。
@@ -25,9 +25,13 @@ const COMMON_UNIX_DIRS = [
 const COMMON_WIN_DIRS = ['C:\\ffmpeg\\bin', 'C:\\ProgramData\\chocolatey\\bin'];
 
 function isExecutableFile(p: string, isWin: boolean): boolean {
-  if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return false;
-  if (!isWin) fs.accessSync(p, fs.constants.X_OK);
-  return true;
+  try {
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return false;
+    if (!isWin) fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string | null {
@@ -39,11 +43,7 @@ export function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string | null {
 
   for (const dir of [...pathDirs, ...commonDirs]) {
     const full = path.join(dir, exe);
-    try {
-      if (isExecutableFile(full, isWin)) return full;
-    } catch {
-      // 権限エラー等は無視して次へ
-    }
+    if (isExecutableFile(full, isWin)) return full;
   }
 
   // which / where によるフォールバック
