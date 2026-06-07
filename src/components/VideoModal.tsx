@@ -1,18 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { Dialog, Modal, ModalOverlay } from 'react-aria-components'
+import { Check, Copy, Download, X } from 'lucide-react'
 import type { Generation } from '../types'
 
 function VideoModalContent({
   gen,
   soundEnabled,
   onSoundChange,
+  onClose,
 }: {
   gen: Generation
   soundEnabled: boolean
   onSoundChange: (enabled: boolean) => void
+  onClose: () => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [frameNo, setFrameNo] = useState('')
+  const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   // manifest(JSON)の width/height は実体とズレる場合があるので、
   // 実際に読み込んだ動画の解像度を優先表示する
   const [actualDim, setActualDim] = useState<{ w: number; h: number } | null>(null)
@@ -24,12 +29,28 @@ function VideoModalContent({
   const title = (gen.title && gen.title !== 'New Video') ? gen.title : ''
   const canExport = gen._local
 
-  // サーバーが Content-Disposition を返すので <a> クリックでダウンロードされる
-  const triggerDownload = (href: string) => {
+  // サーバーが Content-Disposition を返すので <a> クリックでダウンロードされる。
+  // 動画(/video)はインライン配信なので download 属性でファイル名を指定して保存させる
+  const triggerDownload = (href: string, filename?: string) => {
     const a = document.createElement('a')
     a.href = href
+    if (filename) a.download = filename
     a.click()
   }
+
+  const copyPrompt = async () => {
+    if (!prompt) return
+    try {
+      await navigator.clipboard.writeText(prompt)
+      setCopied(true)
+      clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // クリップボード非対応/権限なしは無視
+    }
+  }
+
+  useEffect(() => () => clearTimeout(copyTimer.current), [])
 
   // 入力が空なら現在のフレーム、数値が入っていればその番号を保存対象にする
   const frameToSave = frameNo.trim() === ''
@@ -95,6 +116,16 @@ function VideoModalContent({
 
   return (
     <div className="video-modal-layout">
+      <button
+        type="button"
+        className="video-modal-close"
+        onClick={onClose}
+        aria-label="閉じる"
+        title="閉じる (Esc)"
+      >
+        <X size={20} aria-hidden />
+      </button>
+
       <div className="video-modal-player">
         {src ? (
           <video
@@ -127,7 +158,19 @@ function VideoModalContent({
           </h2>
         )}
 
-        <div className="video-modal-section-label">Prompt</div>
+        <div className="video-modal-prompt-header">
+          <span className="video-modal-section-label">Prompt</span>
+          <button
+            type="button"
+            className="video-modal-icon-btn"
+            onClick={copyPrompt}
+            disabled={!prompt}
+            aria-label="プロンプトをコピー"
+            title={copied ? 'コピーしました' : 'プロンプトをコピー'}
+          >
+            {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+          </button>
+        </div>
 
         {prompt ? (
           <p className="video-modal-prompt">
@@ -154,16 +197,23 @@ function VideoModalContent({
               <button
                 type="button"
                 className="video-modal-btn"
+                onClick={() => triggerDownload(`/video/${gen.id}`, `${gen.id}.mp4`)}
+              >
+                <Download size={15} aria-hidden /> 動画 (MP4)
+              </button>
+              <button
+                type="button"
+                className="video-modal-btn"
                 onClick={() => triggerDownload(`/audio/${gen.id}?format=mp3`)}
               >
-                音声 (MP3)
+                <Download size={15} aria-hidden /> 音声 (MP3)
               </button>
               <button
                 type="button"
                 className="video-modal-btn"
                 onClick={() => triggerDownload(`/audio/${gen.id}?format=m4a`)}
               >
-                音声 (M4A)
+                <Download size={15} aria-hidden /> 音声 (M4A)
               </button>
             </div>
 
@@ -183,7 +233,7 @@ function VideoModalContent({
                 className="video-modal-btn"
                 onClick={() => triggerDownload(`/frame/${gen.id}?n=${frameToSave}`)}
               >
-                フレームを保存
+                <Download size={15} aria-hidden /> フレーム保存
               </button>
             </div>
             {meta && (
@@ -229,6 +279,7 @@ export function VideoModal({
               gen={selected}
               soundEnabled={soundEnabled}
               onSoundChange={onSoundChange}
+              onClose={onClose}
             />
           )}
         </Dialog>
