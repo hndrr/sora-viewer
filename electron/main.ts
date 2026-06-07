@@ -1,5 +1,5 @@
+import path from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
-import path from 'path';
 import { resolveBinary } from '../server/ffmpegPath.js';
 import { type RunningServer, startServer } from '../server/index.js';
 
@@ -115,7 +115,7 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+,',
           click: () => {
             const base = rendererBase();
-            const url = base + (base.includes('?') ? '&' : '?') + 'setup=1';
+            const url = `${base}${base.includes('?') ? '&' : '?'}setup=1`;
             if (win) void loadWithRetry(win, url);
           },
         },

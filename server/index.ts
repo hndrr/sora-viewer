@@ -1,10 +1,10 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { serve } from '@hono/node-server';
-import { execFile } from 'child_process';
-import fs from 'fs';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import os from 'os';
-import path from 'path';
 import { resolveBinary } from './ffmpegPath.js';
 
 // Web モード(npm run dev / serve)は常にプロジェクトルートから起動されるため cwd を基準にする。
@@ -197,7 +197,13 @@ function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
   });
 }
 
-type VideoMeta = { fps: number; frames: number; width: number; height: number; duration: number };
+type VideoMeta = {
+  fps: number;
+  frames: number;
+  width: number;
+  height: number;
+  duration: number;
+};
 function probeVideo(ffprobe: string, videoPath: string): Promise<VideoMeta> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -336,7 +342,10 @@ function createApp(cfg: AppConfig) {
         return c.json({ error: `読み込みに失敗しました: ${String(e)}` }, 500);
       }
     }
-    writeConfigFile(configPath, { jsonDir: state.jsonDir, movDir: state.movDir });
+    writeConfigFile(configPath, {
+      jsonDir: state.jsonDir,
+      movDir: state.movDir,
+    });
     return c.json(configStatus());
   });
 
@@ -368,7 +377,10 @@ function createApp(cfg: AppConfig) {
     }
     const data = fs.readFileSync(thumbPath);
     return new Response(data, {
-      headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' },
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=86400',
+      },
     });
   });
 
@@ -494,7 +506,9 @@ function createApp(cfg: AppConfig) {
         if (!fs.existsSync(filePath)) return c.notFound();
       }
       const data = fs.readFileSync(filePath);
-      return new Response(data, { headers: { 'Content-Type': mimeFor(filePath) } });
+      return new Response(data, {
+        headers: { 'Content-Type': mimeFor(filePath) },
+      });
     });
   }
 
@@ -548,7 +562,14 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   };
   if (!configured) console.log('ℹ データ未設定。設定画面で json/mov フォルダを指定してください。');
 
-  const app = createApp({ state, thumbDir, configPath, distDir: distAbs, ffmpeg, ffprobe });
+  const app = createApp({
+    state,
+    thumbDir,
+    configPath,
+    distDir: distAbs,
+    ffmpeg,
+    ffprobe,
+  });
 
   return new Promise<RunningServer>((resolve, reject) => {
     const server = serve({ fetch: app.fetch, port: opts.port ?? 3001, hostname }, (info) => {
