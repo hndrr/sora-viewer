@@ -1,0 +1,7 @@
+node_modules/
+dist/
+mov/
+json/
+.thumbs/
+src/._index.css
+._.gitignore
