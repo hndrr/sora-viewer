@@ -258,10 +258,12 @@ export function PlaylistPlayer({
   const showBar = useCallback(() => {
     setBarVisible(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => {
-      if (!videoRef.current?.paused && !dragRef.current) setBarVisible(false);
-    }, 3000);
-  }, []);
+    if (!paused) {
+      hideTimer.current = setTimeout(() => {
+        if (!dragRef.current) setBarVisible(false);
+      }, 3000);
+    }
+  }, [paused]);
 
   // ── フローティングバーのドラッグ移動（グリップを掴んでステージ内に配置）──
   const onDragStart = useCallback((e: ReactPointerEvent<HTMLElement>) => {

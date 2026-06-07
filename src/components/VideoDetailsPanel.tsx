@@ -90,7 +90,7 @@ export function VideoDetailsPanel({
 }) {
   const [frameNo, setFrameNo] = useState('');
   const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const copyTimer = useRef<number | undefined>(undefined);
   const prompt = gen.prompt?.trim() ?? '';
   const title = gen.title && gen.title !== 'New Video' ? gen.title : '';
   const canExport = gen._local;
@@ -109,14 +109,14 @@ export function VideoDetailsPanel({
     try {
       await navigator.clipboard.writeText(prompt);
       setCopied(true);
-      clearTimeout(copyTimer.current);
-      copyTimer.current = setTimeout(() => setCopied(false), 1500);
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
     } catch {
       // クリップボード非対応/権限なしは無視
     }
   };
 
-  useEffect(() => () => clearTimeout(copyTimer.current), []);
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
 
   // 入力が空なら現在のフレーム、数値が入っていればその番号を保存対象にする
   const frameToSave =
