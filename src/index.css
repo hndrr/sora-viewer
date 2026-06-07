@@ -170,6 +170,71 @@ body {
   white-space: nowrap;
 }
 
+.video-modal-export {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.video-modal-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.video-modal-btn {
+  flex: 1 1 auto;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .06);
+  padding: 9px 12px;
+  color: #ddd;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+
+.video-modal-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, .3);
+  background: rgba(255, 255, 255, .12);
+}
+
+.video-modal-btn:disabled {
+  cursor: not-allowed;
+  opacity: .4;
+}
+
+.video-modal-frame-row {
+  display: flex;
+  gap: 8px;
+}
+
+.video-modal-frame-hint {
+  color: #777;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.video-modal-frame-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .35);
+  padding: 9px 12px;
+  color: #f0f0f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
+.video-modal-frame-input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, .35);
+}
+
 .video-modal-meta {
   display: flex;
   flex-direction: column;

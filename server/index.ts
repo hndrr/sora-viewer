@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serve } from '@hono/node-server'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
@@ -90,22 +91,63 @@ function loadManifest() {
 
 const manifest = loadManifest()
 
-// ── サムネイル生成 (ffmpeg) ────────────────────────────────────────────────
-function generateThumbnail(videoPath: string, thumbPath: string): Promise<void> {
+// ── ffmpeg 実行ラッパー ─────────────────────────────────────────────────────
+function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('ffmpeg', [
-      '-i', videoPath,
-      '-ss', '0.5',
-      '-vframes', '1',
-      '-vf', 'scale=480:-2',
-      '-q:v', '6',
-      '-y',
-      thumbPath,
-    ], (err) => {
+    execFile('ffmpeg', args, (err) => {
       if (err) reject(err)
       else resolve()
     })
   })
+}
+
+// ── 動画メタ情報の取得 (ffprobe) ─────────────────────────────────────────────
+type VideoMeta = { fps: number; frames: number; width: number; height: number; duration: number }
+function probeVideo(videoPath: string): Promise<VideoMeta> {
+  return new Promise((resolve, reject) => {
+    execFile('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=r_frame_rate,nb_frames,width,height,duration:format=duration',
+      '-of', 'json',
+      videoPath,
+    ], (err, stdout) => {
+      if (err) return reject(err)
+      try {
+        const j = JSON.parse(stdout)
+        const s = j.streams?.[0] ?? {}
+        const [num, den] = String(s.r_frame_rate ?? '0/1').split('/').map(Number)
+        const fps = den ? num / den : 0
+        const duration = Number(s.duration ?? j.format?.duration ?? 0)
+        let frames = Number(s.nb_frames)
+        if (!Number.isFinite(frames) || frames <= 0) {
+          frames = fps && duration ? Math.round(fps * duration) : 0
+        }
+        resolve({
+          fps,
+          frames,
+          width: Number(s.width) || 0,
+          height: Number(s.height) || 0,
+          duration,
+        })
+      } catch (e) {
+        reject(e)
+      }
+    })
+  })
+}
+
+// ── サムネイル生成 (ffmpeg) ────────────────────────────────────────────────
+function generateThumbnail(videoPath: string, thumbPath: string): Promise<void> {
+  return runFfmpeg([
+    '-i', videoPath,
+    '-ss', '0.5',
+    '-vframes', '1',
+    '-vf', 'scale=480:-2',
+    '-q:v', '6',
+    '-y',
+    thumbPath,
+  ])
 }
 
 // ── App ────────────────────────────────────────────────────────────────────
@@ -137,6 +179,80 @@ app.get('/thumbnail/:id', async c => {
       'Cache-Control': 'public, max-age=86400',
     },
   })
+})
+
+// ── 音声書き出し ─────────────────────────────────────────────────────────────
+app.get('/audio/:id', async c => {
+  const id = c.req.param('id')
+  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
+  if (!fs.existsSync(videoPath)) return c.notFound()
+
+  const format = c.req.query('format') === 'm4a' ? 'm4a' : 'mp3'
+  const outPath = path.join(os.tmpdir(), `sora-${id}-${Date.now()}.${format}`)
+
+  // mp3 は再エンコード、m4a は AAC をそのままコピー（無劣化）
+  const codecArgs = format === 'mp3'
+    ? ['-q:a', '2']
+    : ['-c:a', 'copy']
+
+  try {
+    await runFfmpeg(['-i', videoPath, '-vn', ...codecArgs, '-y', outPath])
+    const data = fs.readFileSync(outPath)
+    fs.unlinkSync(outPath)
+    return new Response(data, {
+      headers: {
+        'Content-Type': format === 'mp3' ? 'audio/mpeg' : 'audio/mp4',
+        'Content-Disposition': `attachment; filename="${id}.${format}"`,
+      },
+    })
+  } catch (e) {
+    console.error(`Audio extraction failed for ${id}:`, e)
+    if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
+    return c.text('Audio extraction failed', 500)
+  }
+})
+
+// ── 動画メタ情報 (fps / 総フレーム数) ────────────────────────────────────────
+app.get('/meta/:id', async c => {
+  const id = c.req.param('id')
+  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
+  if (!fs.existsSync(videoPath)) return c.notFound()
+  try {
+    return c.json(await probeVideo(videoPath))
+  } catch (e) {
+    console.error(`Probe failed for ${id}:`, e)
+    return c.text('Probe failed', 500)
+  }
+})
+
+// ── 任意フレームの抽出 ───────────────────────────────────────────────────────
+app.get('/frame/:id', async c => {
+  const id = c.req.param('id')
+  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
+  if (!fs.existsSync(videoPath)) return c.notFound()
+
+  const n = parseInt(c.req.query('n') ?? '', 10)
+  if (!Number.isInteger(n) || n < 0) return c.text('Invalid frame number', 400)
+
+  const outPath = path.join(os.tmpdir(), `sora-${id}-frame${n}-${Date.now()}.png`)
+
+  try {
+    // select フィルタで n 番目のフレームのみを通し、-vframes 1 で確定
+    await runFfmpeg(['-i', videoPath, '-vf', `select=eq(n\\,${n})`, '-vframes', '1', '-y', outPath])
+    if (!fs.existsSync(outPath)) return c.text('Frame not found', 404)
+    const data = fs.readFileSync(outPath)
+    fs.unlinkSync(outPath)
+    return new Response(data, {
+      headers: {
+        'Content-Type': 'image/png',
+        'Content-Disposition': `attachment; filename="${id}_frame${n}.png"`,
+      },
+    })
+  } catch (e) {
+    console.error(`Frame extraction failed for ${id} (n=${n}):`, e)
+    if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
+    return c.text('Frame extraction failed', 500)
+  }
 })
 
 app.get('/video/:id', async c => {
