@@ -3,6 +3,7 @@ import { Switch } from 'react-aria-components'
 import type { Generation } from './types'
 import { VideoCard } from './components/VideoCard'
 import { VideoModal } from './components/VideoModal'
+import { Setup } from './components/Setup'
 
 // ── Prompt 内の @avatar を抽出 ───────────────────────────────────────────
 function extractAvatars(prompt: string): string[] {
@@ -101,6 +102,7 @@ function loadSoundEnabled() {
 }
 
 export default function App() {
+  const [phase, setPhase] = useState<'loading' | 'setup' | 'app'>('loading')
   const [all, setAll] = useState<Generation[]>([])
   const [query, setQuery] = useState('')
   const [selectedAvatars, setSelectedAvatars] = useState<Set<string>>(new Set())
@@ -110,6 +112,14 @@ export default function App() {
   const [selected, setSelected] = useState<Generation | null>(null)
   const [previewSoundEnabled, setPreviewSoundEnabled] = useState(loadSoundEnabled)
   const sentinelRef = useRef<HTMLDivElement>(null)
+
+  const loadManifestData = useCallback(() => {
+    setLoading(true)
+    fetch('/api/manifest')
+      .then(r => r.json())
+      .then((data: Generation[]) => { setAll(data); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
 
   useEffect(() => {
     try {
@@ -125,11 +135,28 @@ export default function App() {
 
 
   useEffect(() => {
-    fetch('/api/manifest')
+    const forceSetup = new URLSearchParams(location.search).get('setup') === '1'
+    fetch('/api/config')
       .then(r => r.json())
-      .then((data: Generation[]) => { setAll(data); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
+      .then((cfg: { configured: boolean }) => {
+        if (cfg.configured && !forceSetup) {
+          setPhase('app')
+          loadManifestData()
+        } else {
+          setPhase('setup')
+        }
+      })
+      .catch(() => setPhase('setup'))
+  }, [loadManifestData])
+
+  const handleSetupDone = useCallback(() => {
+    // ?setup=1 を URL から消してから本体へ
+    const url = new URL(location.href)
+    url.searchParams.delete('setup')
+    history.replaceState(null, '', url.toString())
+    setPhase('app')
+    loadManifestData()
+  }, [loadManifestData])
 
   // アバターリストを集計（件数順）
   const avatarList = useMemo(() => {
@@ -190,10 +217,20 @@ export default function App() {
   const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
   const hasMore = visibleCount < filtered.length
 
+  if (phase === 'loading') return <div style={S.empty}>Loading…</div>
+  if (phase === 'setup') return <Setup onDone={handleSetupDone} />
+
   return (
     <>
       <header style={S.header}>
         <span style={S.h1}>🎬 Sora Viewer</span>
+        <button
+          style={{ ...S.chip, display: 'inline-flex', gap: 4 }}
+          onClick={() => setPhase('setup')}
+          title="データ設定"
+        >
+          ⚙
+        </button>
         {avatarList.length > 0 && (
           <button
             style={{
