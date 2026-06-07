@@ -48,7 +48,8 @@ function dirExists(p?: string): boolean {
 
 function readConfigFile(p: string): { jsonDir?: string; movDir?: string } {
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf-8'))
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
   }
@@ -67,23 +68,35 @@ function writeConfigFile(p: string, data: { jsonDir?: string; movDir?: string })
 function countJson(dir?: string): number {
   if (!dirExists(dir)) return 0
   let n = 0
-  for (const name of fs.readdirSync(dir!)) {
-    if (name.startsWith('._')) continue
-    const full = path.join(dir!, name)
-    try {
-      const st = fs.statSync(full)
-      if (st.isFile() && name.endsWith('-generations.json')) n++
-      else if (st.isDirectory() && fs.existsSync(path.join(full, 'generations.json'))) n++
-    } catch {
-      // ignore
+  try {
+    for (const name of fs.readdirSync(dir!)) {
+      if (name.startsWith('._')) continue
+      const full = path.join(dir!, name)
+      try {
+        const st = fs.statSync(full)
+        if (st.isFile() && name.endsWith('-generations.json')) n++
+        else if (st.isDirectory() && fs.existsSync(path.join(full, 'generations.json'))) n++
+      } catch {
+        // ignore
+      }
     }
+  } catch {
+    return 0
   }
   return n
 }
 
 function countMov(dir?: string): number {
   if (!dirExists(dir)) return 0
-  return fs.readdirSync(dir!).filter(f => f.endsWith('.mp4') && !f.startsWith('._')).length
+  try {
+    return fs.readdirSync(dir!).filter(f => f.endsWith('.mp4') && !f.startsWith('._')).length
+  } catch {
+    return 0
+  }
+}
+
+function isSafeMediaId(id: string): boolean {
+  return /^[a-zA-Z0-9_-]+$/.test(id)
 }
 
 // サーバー側フォルダブラウザ用: ディレクトリの一覧を返す
@@ -297,6 +310,7 @@ function createApp(cfg: AppConfig) {
 
   app.get('/thumbnail/:id', async c => {
     const id = c.req.param('id')
+    if (!isSafeMediaId(id)) return c.text('Invalid ID', 400)
     if (!state.movDir) return c.notFound()
     const thumbPath = path.join(thumbDir, `${id}.jpg`)
     const videoPath = path.join(state.movDir, `${id}.mp4`)
@@ -315,6 +329,7 @@ function createApp(cfg: AppConfig) {
 
   app.get('/audio/:id', async c => {
     const id = c.req.param('id')
+    if (!isSafeMediaId(id)) return c.text('Invalid ID', 400)
     if (!state.movDir) return c.notFound()
     const videoPath = path.join(state.movDir, `${id}.mp4`)
     if (!fs.existsSync(videoPath)) return c.notFound()
@@ -340,6 +355,7 @@ function createApp(cfg: AppConfig) {
 
   app.get('/meta/:id', async c => {
     const id = c.req.param('id')
+    if (!isSafeMediaId(id)) return c.text('Invalid ID', 400)
     if (!state.movDir) return c.notFound()
     const videoPath = path.join(state.movDir, `${id}.mp4`)
     if (!fs.existsSync(videoPath)) return c.notFound()
@@ -353,6 +369,7 @@ function createApp(cfg: AppConfig) {
 
   app.get('/frame/:id', async c => {
     const id = c.req.param('id')
+    if (!isSafeMediaId(id)) return c.text('Invalid ID', 400)
     if (!state.movDir) return c.notFound()
     const videoPath = path.join(state.movDir, `${id}.mp4`)
     if (!fs.existsSync(videoPath)) return c.notFound()
@@ -376,6 +393,7 @@ function createApp(cfg: AppConfig) {
 
   app.get('/video/:id', async c => {
     const id = c.req.param('id')
+    if (!isSafeMediaId(id)) return c.text('Invalid ID', 400)
     if (!state.movDir) return c.notFound()
     const fp = path.join(state.movDir, `${id}.mp4`)
     if (!fs.existsSync(fp)) return c.notFound()

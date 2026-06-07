@@ -27,6 +27,12 @@ const COMMON_WIN_DIRS = [
   'C:\\ProgramData\\chocolatey\\bin',
 ]
 
+function isExecutableFile(p: string, isWin: boolean): boolean {
+  if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return false
+  if (!isWin) fs.accessSync(p, fs.constants.X_OK)
+  return true
+}
+
 export function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string | null {
   const isWin = process.platform === 'win32'
   const exe = isWin ? `${name}.exe` : name
@@ -37,7 +43,7 @@ export function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string | null {
   for (const dir of [...pathDirs, ...commonDirs]) {
     const full = path.join(dir, exe)
     try {
-      if (fs.existsSync(full) && fs.statSync(full).isFile()) return full
+      if (isExecutableFile(full, isWin)) return full
     } catch {
       // 権限エラー等は無視して次へ
     }
@@ -49,7 +55,7 @@ export function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string | null {
     const out = execFileSync(cmd, [name], { encoding: 'utf-8' })
       .split(/\r?\n/)[0]
       ?.trim()
-    if (out && fs.existsSync(out)) return out
+    if (out && isExecutableFile(out, isWin)) return out
   } catch {
     // 見つからない場合は which/where が非ゼロ終了する
   }

@@ -20,10 +20,12 @@ function rendererBase(): string {
 
 async function loadWithRetry(window: BrowserWindow, url: string, attempts = 20) {
   for (let i = 0; i < attempts; i++) {
+    if (window.isDestroyed()) return
     try {
       await window.loadURL(url)
       return
     } catch (e) {
+      if (window.isDestroyed()) return
       if (i === attempts - 1) throw e
       await new Promise((r) => setTimeout(r, 300))
     }
