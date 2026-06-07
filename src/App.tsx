@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Switch } from 'react-aria-components'
 import type { Generation } from './types'
 import { VideoCard } from './components/VideoCard'
 import { VideoModal } from './components/VideoModal'
@@ -20,7 +21,14 @@ const S = {
     flex: 1, minWidth: 180, background: '#222', border: '1px solid #333', borderRadius: 8,
     color: '#ddd', padding: '7px 13px', fontSize: 14, outline: 'none',
   },
-  count: { fontSize: 12, color: '#555', whiteSpace: 'nowrap' as const },
+  count: {
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    border: '1px solid #2f2f2f', borderRadius: 14,
+    background: '#1d1d1d', padding: '3px 10px',
+    fontSize: 11, color: '#777', whiteSpace: 'nowrap' as const,
+  },
+  countStrong: { color: '#ddd', fontSize: 12, fontWeight: 700 },
+  countDivider: { width: 1, height: 12, background: '#333' },
   grid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
@@ -42,10 +50,55 @@ const S = {
   chipActive: {
     background: '#2d4a2d', border: '1px solid #4a7a4a', color: '#afd6af',
   },
+  soundToggle: {
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    background: 'transparent', border: 0, borderRadius: 0,
+    padding: 0, fontSize: 11, color: '#888',
+    cursor: 'pointer', transition: 'all .12s', userSelect: 'none' as const,
+    whiteSpace: 'nowrap' as const,
+  },
+  soundToggleOn: {
+    color: '#c9dcff',
+  },
+  switchTrack: {
+    position: 'relative' as const,
+    width: 26,
+    height: 14,
+    borderRadius: 999,
+    background: '#444',
+    transition: 'background .12s',
+    flex: '0 0 auto',
+  },
+  switchTrackOn: {
+    background: '#5f8ee8',
+  },
+  switchThumb: {
+    position: 'absolute' as const,
+    top: 2,
+    left: 2,
+    width: 10,
+    height: 10,
+    borderRadius: '50%',
+    background: '#bbb',
+    transition: 'transform .12s, background .12s',
+  },
+  switchThumbOn: {
+    background: '#fff',
+    transform: 'translateX(12px)',
+  },
   chipCount: { fontSize: 10, color: '#555', marginLeft: 4 },
 }
 
 const PAGE_SIZE = 60
+const SOUND_STORAGE_KEY = 'sora-viewer:sound-enabled'
+
+function loadSoundEnabled() {
+  try {
+    return localStorage.getItem(SOUND_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
 
 export default function App() {
   const [all, setAll] = useState<Generation[]>([])
@@ -55,7 +108,21 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [selected, setSelected] = useState<Generation | null>(null)
+  const [previewSoundEnabled, setPreviewSoundEnabled] = useState(loadSoundEnabled)
   const sentinelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SOUND_STORAGE_KEY, String(previewSoundEnabled))
+    } catch {
+      // Ignore storage failures; the switch should still work for this session.
+    }
+  }, [previewSoundEnabled])
+
+  const handleSoundBlocked = useCallback(() => {
+    setPreviewSoundEnabled(false)
+  }, [])
+
 
   useEffect(() => {
     fetch('/api/manifest')
@@ -148,9 +215,48 @@ export default function App() {
           onChange={e => setQuery(e.target.value)}
         />
         <span style={S.count}>
-          {loading ? '読込中…' : `${filtered.length} 件`}
-          {!loading && hasMore && ` (表示: ${visibleCount})`}
+          {loading ? (
+            '読込中…'
+          ) : (
+            <>
+              <span>全</span>
+              <span style={S.countStrong}>{filtered.length}</span>
+              <span>件</span>
+              {hasMore && (
+                <>
+                  <span style={S.countDivider} />
+                  <span>表示</span>
+                  <span style={S.countStrong}>{visibleCount}</span>
+                </>
+              )}
+            </>
+          )}
         </span>
+        <Switch
+          style={{
+            ...S.soundToggle,
+            ...(previewSoundEnabled ? S.soundToggleOn : {}),
+          }}
+          isSelected={previewSoundEnabled}
+          onChange={setPreviewSoundEnabled}
+          title="動画の音声"
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              ...S.switchTrack,
+              ...(previewSoundEnabled ? S.switchTrackOn : {}),
+            }}
+          >
+            <span
+              style={{
+                ...S.switchThumb,
+                ...(previewSoundEnabled ? S.switchThumbOn : {}),
+              }}
+            />
+          </span>
+          <span>{previewSoundEnabled ? 'Sound ON' : 'Sound OFF'}</span>
+        </Switch>
       </header>
 
       {showAvatars && avatarList.length > 0 && (
@@ -185,14 +291,25 @@ export default function App() {
       ) : (
         <div style={S.grid}>
           {visible.map(g => (
-            <VideoCard key={g.id} gen={g} onSelect={setSelected} />
+            <VideoCard
+              key={g.id}
+              gen={g}
+              onSelect={setSelected}
+              previewSoundEnabled={previewSoundEnabled}
+              onSoundBlocked={handleSoundBlocked}
+            />
           ))}
         </div>
       )}
 
       {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
 
-      <VideoModal selected={selected} onClose={() => setSelected(null)} />
+      <VideoModal
+        selected={selected}
+        onClose={() => setSelected(null)}
+        soundEnabled={previewSoundEnabled}
+        onSoundChange={setPreviewSoundEnabled}
+      />
     </>
   )
 }

@@ -1,55 +1,103 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { Dialog, Modal, ModalOverlay } from 'react-aria-components'
 import type { Generation } from '../types'
 
-function VideoModalContent({ gen }: { gen: Generation }) {
+function VideoModalContent({
+  gen,
+  soundEnabled,
+  onSoundChange,
+}: {
+  gen: Generation
+  soundEnabled: boolean
+  onSoundChange: (enabled: boolean) => void
+}) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const src = gen._local ? `/video/${gen.id}` : gen.url
   const prompt = gen.prompt?.trim() ?? ''
   const title = (gen.title && gen.title !== 'New Video') ? gen.title : ''
 
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !src) return
+
+    video.muted = !soundEnabled
+    if (soundEnabled) video.volume = 0.8
+
+    video.play().catch(() => {
+      video.muted = true
+      if (soundEnabled) onSoundChange(false)
+      video.play().catch(() => {})
+    })
+  }, [onSoundChange, src, soundEnabled])
+
   return (
-    <>
-      {src ? (
-        <video
-          ref={videoRef}
-          style={{ maxWidth: '90vw', maxHeight: '80vh', borderRadius: 12, background: '#000' }}
-          src={src}
-          controls
-          autoPlay
-          loop
-          playsInline
-        />
-      ) : (
-        <div style={{ color: '#555', fontSize: 16, padding: 60 }}>動画なし</div>
-      )}
-      <div style={{ marginTop: 14, maxWidth: 800, width: '100%', padding: '0 16px' }}>
-        {title && (
-          <p style={{ fontSize: 16, fontWeight: 700, color: '#eee', textAlign: 'center', marginBottom: 8 }}>
-            {title}
-          </p>
+    <div className="video-modal-layout">
+      <div className="video-modal-player">
+        {src ? (
+          <video
+            ref={videoRef}
+            className="video-modal-video"
+            src={src}
+            controls
+            autoPlay
+            loop
+            muted={!soundEnabled}
+            playsInline
+            onVolumeChange={(e) => {
+              const video = e.currentTarget
+              onSoundChange(!video.muted && video.volume > 0)
+            }}
+          />
+        ) : (
+          <div className="video-modal-empty">動画なし</div>
         )}
+      </div>
+
+      <aside className="video-modal-details" aria-label="Video prompt and details">
+        {title && (
+          <h2 className="video-modal-title">
+            {title}
+          </h2>
+        )}
+
+        <div className="video-modal-section-label">Prompt</div>
+
         {prompt ? (
-          <p style={{ fontSize: 14, color: '#ccc', lineHeight: 1.7, whiteSpace: 'pre-wrap', textAlign: 'center' }}>
+          <p className="video-modal-prompt">
             {prompt}
           </p>
         ) : (
-          <p style={{ fontSize: 14, color: '#555', fontStyle: 'italic', textAlign: 'center' }}>
+          <p className="video-modal-prompt video-modal-prompt-empty">
             (プロンプトなし)
           </p>
         )}
-        <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11, color: '#555', fontFamily: 'monospace' }}>{gen.width}×{gen.height}</span>
-          <span style={{ fontSize: 11, color: '#555', fontFamily: 'monospace' }}>ID: {gen.id}</span>
-          <span style={{ fontSize: 11, color: '#555', fontFamily: 'monospace' }}>Task: {gen.task_id}</span>
-          <span style={{ fontSize: 11, color: '#555', fontFamily: 'monospace' }}>{gen._source}</span>
+
+        <div className="video-modal-resolution">
+          <span className="video-modal-resolution-label">Resolution</span>
+          <span className="video-modal-resolution-value">{gen.width} × {gen.height}</span>
         </div>
-      </div>
-    </>
+
+        <div className="video-modal-meta">
+          <span>ID: {gen.id}</span>
+          <span>Task: {gen.task_id}</span>
+          <span>{gen._source}</span>
+        </div>
+      </aside>
+    </div>
   )
 }
 
-export function VideoModal({ selected, onClose }: { selected: Generation | null; onClose: () => void }) {
+export function VideoModal({
+  selected,
+  onClose,
+  soundEnabled,
+  onSoundChange,
+}: {
+  selected: Generation | null
+  onClose: () => void
+  soundEnabled: boolean
+  onSoundChange: (enabled: boolean) => void
+}) {
   return (
     <ModalOverlay
       isOpen={selected !== null}
@@ -59,7 +107,13 @@ export function VideoModal({ selected, onClose }: { selected: Generation | null;
     >
       <Modal className="modal-wrapper">
         <Dialog className="modal-dialog">
-          {selected && <VideoModalContent gen={selected} />}
+          {selected && (
+            <VideoModalContent
+              gen={selected}
+              soundEnabled={soundEnabled}
+              onSoundChange={onSoundChange}
+            />
+          )}
         </Dialog>
       </Modal>
     </ModalOverlay>
