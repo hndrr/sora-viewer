@@ -3,7 +3,6 @@ import { Switch } from 'react-aria-components';
 import { PlaylistPlayer } from './components/PlaylistPlayer';
 import { Setup } from './components/Setup';
 import { VideoCard } from './components/VideoCard';
-import { VideoModal } from './components/VideoModal';
 import type { Generation } from './types';
 
 // ── Prompt 内の @avatar を抽出 ───────────────────────────────────────────
@@ -154,10 +153,14 @@ export default function App() {
   const [showAvatars, setShowAvatars] = useState(false);
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [selected, setSelected] = useState<Generation | null>(null);
   const [previewSoundEnabled, setPreviewSoundEnabled] = useState(loadSoundEnabled);
-  const [playerOpen, setPlayerOpen] = useState(false);
-  const [playerStartIndex, setPlayerStartIndex] = useState(0);
+  // 再生プレーヤーの起動状態。カードクリックも「フルスクリーン再生」も同じプレーヤーで開く。
+  const [player, setPlayer] = useState<{
+    startIndex: number;
+    shuffle: boolean;
+    repeatOne: boolean;
+    details: boolean;
+  } | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   const loadManifestData = useCallback(() => {
@@ -269,9 +272,15 @@ export default function App() {
   // 連続再生の対象（src を持つもの）。絞り込み結果をそのまま順序として使う。
   const playable = useMemo(() => filtered.filter((g) => g._local || g.url), [filtered]);
 
+  // 「フルスクリーン再生」: 先頭から連続再生
   const startPlayback = () => {
-    setPlayerStartIndex(0);
-    setPlayerOpen(true);
+    setPlayer({ startIndex: 0, shuffle: false, repeatOne: false, details: false });
+  };
+
+  // 動画カードクリック: その動画から開く（1本リピート・詳細を最初から表示）
+  const openSingle = (g: Generation) => {
+    const i = playable.findIndex((p) => p.id === g.id);
+    setPlayer({ startIndex: Math.max(i, 0), shuffle: false, repeatOne: true, details: true });
   };
 
   if (phase === 'loading') return <div style={S.empty}>Loading…</div>;
@@ -410,7 +419,7 @@ export default function App() {
             <VideoCard
               key={g.id}
               gen={g}
-              onSelect={setSelected}
+              onSelect={openSingle}
               previewSoundEnabled={previewSoundEnabled}
               onSoundBlocked={handleSoundBlocked}
             />
@@ -420,21 +429,16 @@ export default function App() {
 
       {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
 
-      <VideoModal
-        selected={selected}
-        onClose={() => setSelected(null)}
-        soundEnabled={previewSoundEnabled}
-        onSoundChange={setPreviewSoundEnabled}
-      />
-
-      {playerOpen && playable.length > 0 && (
+      {player && playable.length > 0 && (
         <PlaylistPlayer
           playlist={playable}
-          startIndex={playerStartIndex}
-          initialShuffle={false}
+          startIndex={player.startIndex}
+          initialShuffle={player.shuffle}
+          initialRepeatOne={player.repeatOne}
+          initialShowDetails={player.details}
           soundEnabled={previewSoundEnabled}
           onSoundChange={setPreviewSoundEnabled}
-          onClose={() => setPlayerOpen(false)}
+          onClose={() => setPlayer(null)}
         />
       )}
     </>
