@@ -71,12 +71,21 @@ function loadManifest() {
     }
   }
 
-  entries.sort((a, b) => idToTimestamp(b.id as string) - idToTimestamp(a.id as string))
+  // IDベースの重複排除（複数JSONに同じエントリがある場合）
+  const seen = new Set<string>()
+  const unique = entries.filter(e => {
+    const id = e.id as string
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
 
-  console.log(`✓ ${entries.length} entries  (${entries.filter(e => e._local).length} with local mp4)`)
+  unique.sort((a, b) => idToTimestamp(b.id as string) - idToTimestamp(a.id as string))
+
+  console.log(`✓ ${unique.length} entries  (${unique.filter(e => e._local).length} with local mp4, ${entries.length - unique.length} duplicates removed)`)
   console.log(`  JSON_DIR: ${JSON_DIR}`)
   console.log(`  MOV_DIR:  ${MOV_DIR}`)
-  return entries
+  return unique
 }
 
 const manifest = loadManifest()
