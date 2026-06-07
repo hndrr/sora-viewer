@@ -4,35 +4,51 @@ import { serve } from '@hono/node-server'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
+import { resolveBinary } from './ffmpegPath'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const ROOT_DIR = path.resolve(__dirname, '..')
+// Web モード(npm run dev / serve)は常にプロジェクトルートから起動されるため cwd を基準にする。
+// デスクトップ(Electron)は全ディレクトリを明示指定するためこの既定値は使われない。
+const ROOT_DIR = process.cwd()
 
-const JSON_DIR = process.env.SORA_JSON_DIR
-  ? path.resolve(process.env.SORA_JSON_DIR)
-  : path.resolve(ROOT_DIR, 'json')
-const MOV_DIR = process.env.SORA_MOV_DIR
-  ? path.resolve(process.env.SORA_MOV_DIR)
-  : path.resolve(ROOT_DIR, 'mov')
-const THUMB_DIR = path.resolve(ROOT_DIR, '.thumbs')
+// ── Options ──────────────────────────────────────────────────────────────────
+export interface ServerOptions {
+  port?: number
+  hostname?: string
+  jsonDir?: string
+  movDir?: string
+  thumbDir?: string
+  /** ビルド済みフロント(dist)の絶対パス。指定かつ存在する場合のみ静的配信を有効化 */
+  distDir?: string | null
+  ffmpegPath?: string
+  ffprobePath?: string
+}
 
-// サムネイルキャッシュディレクトリを作成
-if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true })
+export interface RunningServer {
+  server: ReturnType<typeof serve>
+  port: number
+  hostname: string
+  jsonDir: string
+  movDir: string
+  thumbDir: string
+  manifestCount: number
+  ffmpegFound: boolean
+  ffprobeFound: boolean
+  close: () => Promise<void>
+}
 
 // ── Load manifest ──────────────────────────────────────────────────────────
-function loadManifest() {
+function loadManifest(jsonDir: string, movDir: string) {
   const mp4Set = new Set(
-    fs.readdirSync(MOV_DIR)
+    fs.readdirSync(movDir)
       .filter(f => f.endsWith('.mp4') && !f.startsWith('._'))
       .map(f => f.replace('.mp4', ''))
   )
 
   const entries: Record<string, unknown>[] = []
 
-  for (const name of fs.readdirSync(JSON_DIR).sort()) {
-    const fullPath = path.join(JSON_DIR, name)
+  for (const name of fs.readdirSync(jsonDir).sort()) {
+    const fullPath = path.join(jsonDir, name)
     const stat = fs.statSync(fullPath)
 
     if (stat.isFile() && name.endsWith('-generations.json') && !name.startsWith('._')) {
@@ -84,17 +100,15 @@ function loadManifest() {
   unique.sort((a, b) => idToTimestamp(b.id as string) - idToTimestamp(a.id as string))
 
   console.log(`✓ ${unique.length} entries  (${unique.filter(e => e._local).length} with local mp4, ${entries.length - unique.length} duplicates removed)`)
-  console.log(`  JSON_DIR: ${JSON_DIR}`)
-  console.log(`  MOV_DIR:  ${MOV_DIR}`)
+  console.log(`  JSON_DIR: ${jsonDir}`)
+  console.log(`  MOV_DIR:  ${movDir}`)
   return unique
 }
 
-const manifest = loadManifest()
-
 // ── ffmpeg 実行ラッパー ─────────────────────────────────────────────────────
-function runFfmpeg(args: string[]): Promise<void> {
+function runFfmpeg(ffmpeg: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('ffmpeg', args, (err) => {
+    execFile(ffmpeg, args, (err) => {
       if (err) reject(err)
       else resolve()
     })
@@ -103,9 +117,9 @@ function runFfmpeg(args: string[]): Promise<void> {
 
 // ── 動画メタ情報の取得 (ffprobe) ─────────────────────────────────────────────
 type VideoMeta = { fps: number; frames: number; width: number; height: number; duration: number }
-function probeVideo(videoPath: string): Promise<VideoMeta> {
+function probeVideo(ffprobe: string, videoPath: string): Promise<VideoMeta> {
   return new Promise((resolve, reject) => {
-    execFile('ffprobe', [
+    execFile(ffprobe, [
       '-v', 'error',
       '-select_streams', 'v:0',
       '-show_entries', 'stream=r_frame_rate,nb_frames,width,height,duration:format=duration',
@@ -138,8 +152,8 @@ function probeVideo(videoPath: string): Promise<VideoMeta> {
 }
 
 // ── サムネイル生成 (ffmpeg) ────────────────────────────────────────────────
-function generateThumbnail(videoPath: string, thumbPath: string): Promise<void> {
-  return runFfmpeg([
+function generateThumbnail(ffmpeg: string, videoPath: string, thumbPath: string): Promise<void> {
+  return runFfmpeg(ffmpeg, [
     '-i', videoPath,
     '-ss', '0.5',
     '-vframes', '1',
@@ -150,147 +164,247 @@ function generateThumbnail(videoPath: string, thumbPath: string): Promise<void> 
   ])
 }
 
-// ── App ────────────────────────────────────────────────────────────────────
-const app = new Hono()
-app.use('*', cors())
+// ── 静的ファイル配信 (絶対パス対応の手動ハンドラ) ────────────────────────────
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.map': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+}
+function mimeFor(filePath: string): string {
+  return MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+}
 
-app.get('/api/manifest', c => c.json(manifest))
+// ── App 生成 ─────────────────────────────────────────────────────────────────
+interface AppConfig {
+  manifest: Record<string, unknown>[]
+  movDir: string
+  thumbDir: string
+  distDir: string | null
+  ffmpeg: string
+  ffprobe: string
+}
 
-app.get('/thumbnail/:id', async c => {
-  const id = c.req.param('id')
-  const thumbPath = path.join(THUMB_DIR, `${id}.jpg`)
-  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
+function createApp(cfg: AppConfig) {
+  const { manifest, movDir, thumbDir, distDir, ffmpeg, ffprobe } = cfg
+  const app = new Hono()
+  app.use('*', cors())
 
-  if (!fs.existsSync(videoPath)) return c.notFound()
+  app.get('/api/manifest', c => c.json(manifest))
 
-  if (!fs.existsSync(thumbPath)) {
-    try {
-      await generateThumbnail(videoPath, thumbPath)
-    } catch (e) {
-      console.error(`Thumbnail generation failed for ${id}:`, e)
-      return c.text('Thumbnail generation failed', 500)
+  app.get('/thumbnail/:id', async c => {
+    const id = c.req.param('id')
+    const thumbPath = path.join(thumbDir, `${id}.jpg`)
+    const videoPath = path.join(movDir, `${id}.mp4`)
+
+    if (!fs.existsSync(videoPath)) return c.notFound()
+
+    if (!fs.existsSync(thumbPath)) {
+      try {
+        await generateThumbnail(ffmpeg, videoPath, thumbPath)
+      } catch (e) {
+        console.error(`Thumbnail generation failed for ${id}:`, e)
+        return c.text('Thumbnail generation failed', 500)
+      }
     }
-  }
 
-  const data = fs.readFileSync(thumbPath)
-  return new Response(data, {
-    headers: {
-      'Content-Type': 'image/jpeg',
-      'Cache-Control': 'public, max-age=86400',
-    },
+    const data = fs.readFileSync(thumbPath)
+    return new Response(data, {
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=86400',
+      },
+    })
   })
-})
 
-// ── 音声書き出し ─────────────────────────────────────────────────────────────
-app.get('/audio/:id', async c => {
-  const id = c.req.param('id')
-  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
-  if (!fs.existsSync(videoPath)) return c.notFound()
+  // ── 音声書き出し ───────────────────────────────────────────────────────────
+  app.get('/audio/:id', async c => {
+    const id = c.req.param('id')
+    const videoPath = path.join(movDir, `${id}.mp4`)
+    if (!fs.existsSync(videoPath)) return c.notFound()
 
-  const format = c.req.query('format') === 'm4a' ? 'm4a' : 'mp3'
-  const outPath = path.join(os.tmpdir(), `sora-${id}-${Date.now()}.${format}`)
+    const format = c.req.query('format') === 'm4a' ? 'm4a' : 'mp3'
+    const outPath = path.join(os.tmpdir(), `sora-${id}-${Date.now()}.${format}`)
 
-  // mp3 は再エンコード、m4a は AAC をそのままコピー（無劣化）
-  const codecArgs = format === 'mp3'
-    ? ['-q:a', '2']
-    : ['-c:a', 'copy']
+    // mp3 は再エンコード、m4a は AAC をそのままコピー（無劣化）
+    const codecArgs = format === 'mp3'
+      ? ['-q:a', '2']
+      : ['-c:a', 'copy']
 
-  try {
-    await runFfmpeg(['-i', videoPath, '-vn', ...codecArgs, '-y', outPath])
-    const data = fs.readFileSync(outPath)
-    fs.unlinkSync(outPath)
-    return new Response(data, {
-      headers: {
-        'Content-Type': format === 'mp3' ? 'audio/mpeg' : 'audio/mp4',
-        'Content-Disposition': `attachment; filename="${id}.${format}"`,
-      },
-    })
-  } catch (e) {
-    console.error(`Audio extraction failed for ${id}:`, e)
-    if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
-    return c.text('Audio extraction failed', 500)
-  }
-})
+    try {
+      await runFfmpeg(ffmpeg, ['-i', videoPath, '-vn', ...codecArgs, '-y', outPath])
+      const data = fs.readFileSync(outPath)
+      fs.unlinkSync(outPath)
+      return new Response(data, {
+        headers: {
+          'Content-Type': format === 'mp3' ? 'audio/mpeg' : 'audio/mp4',
+          'Content-Disposition': `attachment; filename="${id}.${format}"`,
+        },
+      })
+    } catch (e) {
+      console.error(`Audio extraction failed for ${id}:`, e)
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
+      return c.text('Audio extraction failed', 500)
+    }
+  })
 
-// ── 動画メタ情報 (fps / 総フレーム数) ────────────────────────────────────────
-app.get('/meta/:id', async c => {
-  const id = c.req.param('id')
-  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
-  if (!fs.existsSync(videoPath)) return c.notFound()
-  try {
-    return c.json(await probeVideo(videoPath))
-  } catch (e) {
-    console.error(`Probe failed for ${id}:`, e)
-    return c.text('Probe failed', 500)
-  }
-})
+  // ── 動画メタ情報 (fps / 総フレーム数) ──────────────────────────────────────
+  app.get('/meta/:id', async c => {
+    const id = c.req.param('id')
+    const videoPath = path.join(movDir, `${id}.mp4`)
+    if (!fs.existsSync(videoPath)) return c.notFound()
+    try {
+      return c.json(await probeVideo(ffprobe, videoPath))
+    } catch (e) {
+      console.error(`Probe failed for ${id}:`, e)
+      return c.text('Probe failed', 500)
+    }
+  })
 
-// ── 任意フレームの抽出 ───────────────────────────────────────────────────────
-app.get('/frame/:id', async c => {
-  const id = c.req.param('id')
-  const videoPath = path.join(MOV_DIR, `${id}.mp4`)
-  if (!fs.existsSync(videoPath)) return c.notFound()
+  // ── 任意フレームの抽出 ─────────────────────────────────────────────────────
+  app.get('/frame/:id', async c => {
+    const id = c.req.param('id')
+    const videoPath = path.join(movDir, `${id}.mp4`)
+    if (!fs.existsSync(videoPath)) return c.notFound()
 
-  const n = parseInt(c.req.query('n') ?? '', 10)
-  if (!Number.isInteger(n) || n < 0) return c.text('Invalid frame number', 400)
+    const n = parseInt(c.req.query('n') ?? '', 10)
+    if (!Number.isInteger(n) || n < 0) return c.text('Invalid frame number', 400)
 
-  const outPath = path.join(os.tmpdir(), `sora-${id}-frame${n}-${Date.now()}.png`)
+    const outPath = path.join(os.tmpdir(), `sora-${id}-frame${n}-${Date.now()}.png`)
 
-  try {
-    // select フィルタで n 番目のフレームのみを通し、-vframes 1 で確定
-    await runFfmpeg(['-i', videoPath, '-vf', `select=eq(n\\,${n})`, '-vframes', '1', '-y', outPath])
-    if (!fs.existsSync(outPath)) return c.text('Frame not found', 404)
-    const data = fs.readFileSync(outPath)
-    fs.unlinkSync(outPath)
-    return new Response(data, {
-      headers: {
-        'Content-Type': 'image/png',
-        'Content-Disposition': `attachment; filename="${id}_frame${n}.png"`,
-      },
-    })
-  } catch (e) {
-    console.error(`Frame extraction failed for ${id} (n=${n}):`, e)
-    if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
-    return c.text('Frame extraction failed', 500)
-  }
-})
+    try {
+      // select フィルタで n 番目のフレームのみを通し、-vframes 1 で確定
+      await runFfmpeg(ffmpeg, ['-i', videoPath, '-vf', `select=eq(n\\,${n})`, '-vframes', '1', '-y', outPath])
+      if (!fs.existsSync(outPath)) return c.text('Frame not found', 404)
+      const data = fs.readFileSync(outPath)
+      fs.unlinkSync(outPath)
+      return new Response(data, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Content-Disposition': `attachment; filename="${id}_frame${n}.png"`,
+        },
+      })
+    } catch (e) {
+      console.error(`Frame extraction failed for ${id} (n=${n}):`, e)
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
+      return c.text('Frame extraction failed', 500)
+    }
+  })
 
-app.get('/video/:id', async c => {
-  const id  = c.req.param('id')
-  const fp  = path.join(MOV_DIR, `${id}.mp4`)
-  if (!fs.existsSync(fp)) return c.notFound()
+  app.get('/video/:id', async c => {
+    const id  = c.req.param('id')
+    const fp  = path.join(movDir, `${id}.mp4`)
+    if (!fs.existsSync(fp)) return c.notFound()
 
-  const size  = fs.statSync(fp).size
-  const range = c.req.header('range')
+    const size  = fs.statSync(fp).size
+    const range = c.req.header('range')
 
-  if (range) {
-    const [s, e] = range.replace('bytes=', '').split('-')
-    const start  = parseInt(s, 10)
-    const end    = e ? parseInt(e, 10) : size - 1
-    const chunk  = end - start + 1
+    if (range) {
+      const [s, e] = range.replace('bytes=', '').split('-')
+      const start  = parseInt(s, 10)
+      const end    = e ? parseInt(e, 10) : size - 1
+      const chunk  = end - start + 1
 
-    const stream = fs.createReadStream(fp, { start, end })
+      const stream = fs.createReadStream(fp, { start, end })
+      return new Response(stream as unknown as ReadableStream, {
+        status: 206,
+        headers: {
+          'Content-Type':  'video/mp4',
+          'Content-Range': `bytes ${start}-${end}/${size}`,
+          'Content-Length': String(chunk),
+          'Accept-Ranges': 'bytes',
+        },
+      })
+    }
+
+    const stream = fs.createReadStream(fp)
     return new Response(stream as unknown as ReadableStream, {
-      status: 206,
       headers: {
-        'Content-Type':  'video/mp4',
-        'Content-Range': `bytes ${start}-${end}/${size}`,
-        'Content-Length': String(chunk),
-        'Accept-Ranges': 'bytes',
+        'Content-Type':   'video/mp4',
+        'Content-Length': String(size),
+        'Accept-Ranges':  'bytes',
       },
+    })
+  })
+
+  // ── ビルド済みフロントの配信（distDir 指定かつ存在する場合のみ） ────────────
+  if (distDir && fs.existsSync(distDir)) {
+    app.get('*', c => {
+      const urlPath = decodeURIComponent(new URL(c.req.url).pathname)
+      const rel = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '')
+      let filePath = path.resolve(distDir, rel)
+
+      // ディレクトリトラバーサル防止 + SPA フォールバック
+      const inside = filePath === distDir || filePath.startsWith(distDir + path.sep)
+      if (!inside || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        filePath = path.join(distDir, 'index.html')
+        if (!fs.existsSync(filePath)) return c.notFound()
+      }
+
+      const data = fs.readFileSync(filePath)
+      return new Response(data, { headers: { 'Content-Type': mimeFor(filePath) } })
     })
   }
 
-  const stream = fs.createReadStream(fp)
-  return new Response(stream as unknown as ReadableStream, {
-    headers: {
-      'Content-Type':   'video/mp4',
-      'Content-Length': String(size),
-      'Accept-Ranges':  'bytes',
-    },
-  })
-})
+  return app
+}
 
-serve({ fetch: app.fetch, port: 3001 }, () => {
-  console.log('🎬 Sora server → http://localhost:3001')
-})
+// ── 起動 ─────────────────────────────────────────────────────────────────────
+export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
+  const hostname = opts.hostname ?? '127.0.0.1'
+  const jsonDir = path.resolve(opts.jsonDir ?? process.env.SORA_JSON_DIR ?? path.join(ROOT_DIR, 'json'))
+  const movDir  = path.resolve(opts.movDir  ?? process.env.SORA_MOV_DIR  ?? path.join(ROOT_DIR, 'mov'))
+  const thumbDir = path.resolve(opts.thumbDir ?? path.join(ROOT_DIR, '.thumbs'))
+  const distDir = opts.distDir === undefined
+    ? path.join(ROOT_DIR, 'dist')   // CLI(web) 既定: プロジェクトの dist
+    : opts.distDir
+  const distAbs = distDir ? path.resolve(distDir) : null
+
+  // ffmpeg / ffprobe の解決（指定 > PATH/既知の場所 > 'ffmpeg' フォールバック）
+  const ffmpegResolved  = opts.ffmpegPath  ?? resolveBinary('ffmpeg')
+  const ffprobeResolved = opts.ffprobePath ?? resolveBinary('ffprobe')
+  const ffmpeg  = ffmpegResolved  ?? 'ffmpeg'
+  const ffprobe = ffprobeResolved ?? 'ffprobe'
+  if (!ffmpegResolved)  console.warn('⚠ ffmpeg が見つかりません。サムネイル/音声/フレーム書き出しは無効になります。')
+  if (!ffprobeResolved) console.warn('⚠ ffprobe が見つかりません。メタ情報取得は無効になります。')
+
+  // サムネイルキャッシュディレクトリを作成
+  if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true })
+
+  const manifest = loadManifest(jsonDir, movDir)
+  const app = createApp({ manifest, movDir, thumbDir, distDir: distAbs, ffmpeg, ffprobe })
+
+  return new Promise<RunningServer>((resolve, reject) => {
+    const server = serve({ fetch: app.fetch, port: opts.port ?? 3001, hostname }, (info) => {
+      const port = info.port
+      console.log(`🎬 Sora server → http://${hostname}:${port}`)
+      resolve({
+        server,
+        port,
+        hostname,
+        jsonDir,
+        movDir,
+        thumbDir,
+        manifestCount: manifest.length,
+        ffmpegFound: !!ffmpegResolved,
+        ffprobeFound: !!ffprobeResolved,
+        close: () => new Promise<void>((res) => server.close(() => res())),
+      })
+    })
+    // listen 前のエラー(EADDRINUSE 等)を補足。resolve 済みの場合は no-op。
+    ;(server as unknown as NodeJS.EventEmitter).on('error', reject)
+  })
+}

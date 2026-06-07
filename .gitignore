@@ -1,5 +1,7 @@
 node_modules/
 dist/
+dist-electron/
+release/
 .thumbs/
 
 # データディレクトリ: 中身はignore、ディレクトリ自体は維持
