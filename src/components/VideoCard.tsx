@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Generation } from '../types'
 
 const S = {
@@ -10,6 +10,11 @@ const S = {
   cardHover: { borderColor: '#444' },
   vwrap: { position: 'relative' as const, background: '#000', overflow: 'hidden' },
   thumb: { width: '100%', height: '100%', objectFit: 'contain' as const, display: 'block' },
+  previewVideo: {
+    position: 'absolute' as const, inset: 0,
+    width: '100%', height: '100%', objectFit: 'contain' as const,
+    background: '#000', opacity: 0, transition: 'opacity .12s',
+  },
   badge: {
     position: 'absolute' as const, top: 7, right: 7,
     background: 'rgba(0,0,0,.65)', borderRadius: 4,
@@ -34,20 +39,97 @@ function aspectRatio(w: number, h: number) {
   return '1/1'
 }
 
-export function VideoCard({ gen, onSelect }: { gen: Generation; onSelect: (g: Generation) => void }) {
+export function VideoCard({
+  gen,
+  onSelect,
+  previewSoundEnabled,
+  onSoundBlocked,
+}: {
+  gen: Generation
+  onSelect: (g: Generation) => void
+  previewSoundEnabled: boolean
+  onSoundBlocked: () => void
+}) {
   const [hovered, setHovered] = useState(false)
+  const [previewActive, setPreviewActive] = useState(false)
+  const [previewReady, setPreviewReady] = useState(false)
   const [thumbError, setThumbError] = useState(false)
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const previewVideoRef = useRef<HTMLVideoElement>(null)
 
   const thumbSrc = gen._local ? `/thumbnail/${gen.id}` : undefined
+  const previewSrc = gen._local ? `/video/${gen.id}` : undefined
   const prompt = gen.prompt?.trim() ?? ''
   const title = (gen.title && gen.title !== 'New Video') ? gen.title : ''
+  const showPreview = previewActive && previewSrc
+  const stopPreview = () => {
+    if (previewVideoRef.current) {
+      previewVideoRef.current.pause()
+      previewVideoRef.current.currentTime = 0
+    }
+    setPreviewActive(false)
+    setPreviewReady(false)
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+  }
+  const startPreviewPlayback = (video: HTMLVideoElement) => {
+    video.muted = !previewSoundEnabled
+    video.volume = 0.8
+
+    const playPromise = video.play()
+    if (playPromise) {
+      playPromise
+        .then(() => setPreviewReady(true))
+        .catch(() => {
+          video.muted = true
+          if (previewSoundEnabled) onSoundBlocked()
+          video.play().finally(() => setPreviewReady(true))
+        })
+    } else {
+      setPreviewReady(true)
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    const video = previewVideoRef.current
+    if (!video) return
+
+    video.muted = !previewSoundEnabled
+    if (previewSoundEnabled) {
+      video.volume = 0.8
+      video.play().catch(() => {
+        video.muted = true
+        onSoundBlocked()
+      })
+    }
+  }, [onSoundBlocked, previewSoundEnabled])
 
   return (
     <div
       style={{ ...S.card, ...(hovered ? S.cardHover : {}) }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={() => onSelect(gen)}
+      onMouseEnter={() => {
+        setHovered(true)
+        if (!previewSrc) return
+        hoverTimerRef.current = setTimeout(() => {
+          setPreviewActive(true)
+        }, 260)
+      }}
+      onMouseLeave={() => {
+        setHovered(false)
+        stopPreview()
+      }}
+      onClick={() => {
+        stopPreview()
+        onSelect(gen)
+      }}
     >
       <div style={{ ...S.vwrap, aspectRatio: aspectRatio(gen.width, gen.height) }}>
         {thumbSrc && !thumbError ? (
@@ -63,7 +145,22 @@ export function VideoCard({ gen, onSelect }: { gen: Generation; onSelect: (g: Ge
             {gen._local ? '▶' : 'URL'}
           </div>
         )}
-        <div style={{ ...S.playIcon, opacity: hovered ? 1 : 0 }}>
+
+        {showPreview && (
+          <video
+            ref={previewVideoRef}
+            src={previewSrc}
+            style={{ ...S.previewVideo, opacity: previewReady ? 1 : 0 }}
+            autoPlay
+            loop
+            muted={!previewSoundEnabled}
+            playsInline
+            preload="metadata"
+            onCanPlay={(e) => startPreviewPlayback(e.currentTarget)}
+          />
+        )}
+
+        <div style={{ ...S.playIcon, opacity: hovered && !previewReady ? 1 : 0 }}>
           <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
             <circle cx="24" cy="24" r="23" fill="rgba(0,0,0,.5)" stroke="rgba(255,255,255,.4)" strokeWidth="2" />
             <polygon points="19,14 19,34 36,24" fill="rgba(255,255,255,.9)" />
