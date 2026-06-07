@@ -7,8 +7,14 @@
 ```
 sora-viewer/
 ├── server/              # API サーバー (Hono + Node.js)
-│   └── index.ts         #   マニフェスト配信・動画ストリーミング・サムネイル生成
-├── src/                 # フロントエンド (React + Vite)
+│   ├── index.ts         #   startServer()・マニフェスト配信・動画ストリーミング・dist 静的配信
+│   ├── cli.ts           #   Web モード用の起動エントリ
+│   └── ffmpegPath.ts    #   ffmpeg/ffprobe の実行ファイル探索（PATH 非継承対策）
+├── electron/            # Electron デスクトップシェル
+│   └── main.ts          #   サーバー起動 + ウィンドウ + データフォルダ選択
+├── scripts/
+│   └── build-electron.mjs #  esbuild で main.cjs / server.cjs を生成
+├── src/                 # フロントエンド (React + Vite) ※Web/デスクトップ共通
 │   ├── main.tsx         #   エントリーポイント
 │   ├── App.tsx          #   ルートコンポーネント（検索・無限スクロール）
 │   ├── types.ts         #   型定義
@@ -19,12 +25,27 @@ sora-viewer/
 ├── json/                # Sora エクスポート JSON（*-generations.json）
 ├── mov/                 # ダウンロード済み MP4 ファイル
 ├── .thumbs/             # 自動生成されるサムネイルキャッシュ（gitignore 済み）
+├── dist/                # Vite ビルド成果物（gitignore 済み）
+├── dist-electron/       # esbuild 成果物 main.cjs / server.cjs（gitignore 済み）
+├── release/             # electron-builder の配布物出力（gitignore 済み）
 ├── index.html
 ├── package.json
 ├── vite.config.ts
 ├── tsconfig.json
 └── tsconfig.server.json
 ```
+
+## 動作モード
+
+このアプリは **同一の Hono サーバー**を中心に動きます。**モードによって開くポートが異なる**点に注意してください。
+
+| モード | コマンド | 開く URL | 構成 |
+| ------ | -------- | -------- | ---- |
+| **開発 (Web)** | `npm run dev` | **http://localhost:5173** | Vite(5173, HMR) がフロント配信 → API のみ Hono(3001) へプロキシ |
+| **ローカル Web（ビルド後）** | `npm run serve` | **http://localhost:3001** | Vite は動かさず、Hono(3001) が **ビルド済みフロント＋API を両方**配信 |
+| **デスクトップ (Electron)** | `npm run dev:electron` / ビルド版 | アプリ内ウィンドウ | Electron が Hono を内部起動。**起動中はブラウザから 3001 へも同時アクセス可** |
+
+> ポイント: 開発中は Vite の **5173**、ビルド後の `serve` / デスクトップでは Hono の **3001** が「全部入り」になります（後者は今回追加した静的配信機能による）。
 
 ## セットアップ
 
@@ -98,12 +119,41 @@ json/
 
 ### 起動
 
+#### 開発（HMR あり）
+
 ```bash
-npm run dev
+npm run dev          # Web 開発: Vite(5173) + Hono(3001)
+npm run dev:electron # デスクトップ開発: Vite + Electron ウィンドウ
 ```
 
 - **React (フロント)**: http://localhost:5173
 - **Hono (API)**: http://localhost:3001
+
+#### ローカル Web（ビルド済み・サーバー単体）
+
+```bash
+npm run serve        # vite build + サーバー起動 → http://localhost:3001 で全機能
+```
+
+#### デスクトップアプリのビルド
+
+> ビルド済みバイナリは配布していません。各自でローカルにビルドしてください。
+
+```bash
+npm run dist         # 現在の OS 向けに dmg / nsis / AppImage を release/ に生成
+npm run dist:dir     # パッケージ化せず展開ディレクトリのみ（動作確認用・高速）
+```
+
+> **asar を無効化しています**（`build.asar: false`）。本リポジトリは外部ボリューム上での運用を想定しており、asar 生成物の読み戻し（整合性ハッシュ計算）が一部の外部ファイルシステムで失敗するためです。内蔵ディスクで運用する場合は `asar: true`（既定）に戻して問題ありません。
+
+### データ設定（web / desktop 共通）
+
+**データ（json / mov）はアプリに同梱しません。** 未設定のときは**アプリ内の設定画面**が開き、JSON フォルダと mov フォルダをそれぞれ指定します（別々の場所でも可。検出件数が表示されます）。
+
+- **desktop**: 「フォルダを選択…」は OS のネイティブダイアログ。選択内容は userData に保存。メニュー「ファイル → データ設定…（⌘,）」で再設定。
+- **web**: 「フォルダを選択…」は**サーバー側フォルダブラウザ**（ブラウザは OS のパスを取得できないため）。設定はサーバーが `.sora-viewer.json` に保存。ヘッダーの ⚙ ボタン、または `?setup=1` で再設定。
+- `json/` と `mov/` がプロジェクト直下（または `SORA_JSON_DIR`/`SORA_MOV_DIR`）に存在する場合は自動検出され、設定画面はスキップされます。
+- サムネイルキャッシュは desktop=userData、web=`.thumbs/` に保存されます。
 
 ## 機能
 
@@ -127,7 +177,19 @@ npm run dev
 ## スクリプト
 
 ```bash
-npm run dev      # フロント + サーバーを同時起動
-npm run build    # Vite プロダクションビルド
-npm run server   # サーバーのみ起動
+npm run dev          # Web 開発: フロント(Vite) + サーバー(Hono) 同時起動
+npm run dev:electron # デスクトップ開発: Vite + Electron
+npm run server       # サーバーのみ起動（tsx）
+npm run build        # Vite ビルド + esbuild(main.cjs / server.cjs)
+npm run serve        # build 後にサーバー単体起動（ローカル Web 完成形）
+npm run dist         # electron-builder で配布物を生成（release/）
+npm run dist:dir     # 展開ディレクトリのみ生成（動作確認用）
 ```
+
+## ライセンス
+
+本リポジトリのコードは [MIT License](./LICENSE) です。
+
+ソースのみの配布（ビルド済みバイナリは配布しません）。依存は `npm install` で各環境が取得し、**ffmpeg / ffprobe（CLI）は同梱しません**（各自でインストール）。
+
+主要な利用 OSS: [Electron](https://www.electronjs.org/) (MIT) / [React](https://react.dev/) (MIT) / [Hono](https://hono.dev/) (MIT) / [Vite](https://vite.dev/) (MIT) / [React Aria Components](https://react-spectrum.adobe.com/react-aria/) (Apache-2.0)。
