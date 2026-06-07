@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { Dialog, Modal, ModalOverlay } from 'react-aria-components'
-import { Check, Copy, Download, X } from 'lucide-react'
-import type { Generation } from '../types'
+import { Check, Copy, Download, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Dialog, Modal, ModalOverlay } from 'react-aria-components';
+import type { Generation } from '../types';
 
 function VideoModalContent({
   gen,
@@ -9,110 +9,111 @@ function VideoModalContent({
   onSoundChange,
   onClose,
 }: {
-  gen: Generation
-  soundEnabled: boolean
-  onSoundChange: (enabled: boolean) => void
-  onClose: () => void
+  gen: Generation;
+  soundEnabled: boolean;
+  onSoundChange: (enabled: boolean) => void;
+  onClose: () => void;
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const [frameNo, setFrameNo] = useState('')
-  const [copied, setCopied] = useState(false)
-  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [frameNo, setFrameNo] = useState('');
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   // manifest(JSON)の width/height は実体とズレる場合があるので、
   // 実際に読み込んだ動画の解像度を優先表示する
-  const [actualDim, setActualDim] = useState<{ w: number; h: number } | null>(null)
+  const [actualDim, setActualDim] = useState<{ w: number; h: number } | null>(null);
   // fps はフレーム番号 ⇔ 再生時間の変換に必要（ffprobe からサーバー経由で取得）
-  const [meta, setMeta] = useState<{ fps: number; frames: number } | null>(null)
-  const [currentFrame, setCurrentFrame] = useState(0)
-  const src = gen._local ? `/video/${gen.id}` : gen.url
-  const prompt = gen.prompt?.trim() ?? ''
-  const title = (gen.title && gen.title !== 'New Video') ? gen.title : ''
-  const canExport = gen._local
+  const [meta, setMeta] = useState<{ fps: number; frames: number } | null>(null);
+  const [currentFrame, setCurrentFrame] = useState(0);
+  const src = gen._local ? `/video/${gen.id}` : gen.url;
+  const prompt = gen.prompt?.trim() ?? '';
+  const title = gen.title && gen.title !== 'New Video' ? gen.title : '';
+  const canExport = gen._local;
 
   // サーバーが Content-Disposition を返すので <a> クリックでダウンロードされる。
   // 動画(/video)はインライン配信なので download 属性でファイル名を指定して保存させる
   const triggerDownload = (href: string, filename?: string) => {
-    const a = document.createElement('a')
-    a.href = href
-    if (filename) a.download = filename
-    a.click()
-  }
+    const a = document.createElement('a');
+    a.href = href;
+    if (filename) a.download = filename;
+    a.click();
+  };
 
   const copyPrompt = async () => {
-    if (!prompt) return
+    if (!prompt) return;
     try {
-      await navigator.clipboard.writeText(prompt)
-      setCopied(true)
-      clearTimeout(copyTimer.current)
-      copyTimer.current = setTimeout(() => setCopied(false), 1500)
+      await navigator.clipboard.writeText(prompt);
+      setCopied(true);
+      clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
     } catch {
       // クリップボード非対応/権限なしは無視
     }
-  }
+  };
 
-  useEffect(() => () => clearTimeout(copyTimer.current), [])
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
 
   // 入力が空なら現在のフレーム、数値が入っていればその番号を保存対象にする
-  const frameToSave = frameNo.trim() === ''
-    ? currentFrame
-    : Math.max(0, Math.floor(Number(frameNo) || 0))
+  const frameToSave =
+    frameNo.trim() === '' ? currentFrame : Math.max(0, Math.floor(Number(frameNo) || 0));
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video || !src) return
+    const video = videoRef.current;
+    if (!video || !src) return;
 
     // src が変わったら実解像度をリセットし、読込済みなら即反映
-    setActualDim(video.videoWidth ? { w: video.videoWidth, h: video.videoHeight } : null)
+    setActualDim(video.videoWidth ? { w: video.videoWidth, h: video.videoHeight } : null);
 
-    video.muted = !soundEnabled
-    if (soundEnabled) video.volume = 0.8
+    video.muted = !soundEnabled;
+    if (soundEnabled) video.volume = 0.8;
 
     video.play().catch(() => {
-      video.muted = true
-      if (soundEnabled) onSoundChange(false)
-      video.play().catch(() => {})
-    })
-  }, [onSoundChange, src, soundEnabled])
+      video.muted = true;
+      if (soundEnabled) onSoundChange(false);
+      video.play().catch(() => {});
+    });
+  }, [onSoundChange, src, soundEnabled]);
 
   // fps / 総フレーム数を ffprobe から取得（ローカルのみ）
   useEffect(() => {
-    setMeta(null)
-    setCurrentFrame(0)
-    if (!canExport) return
-    let cancelled = false
+    setMeta(null);
+    setCurrentFrame(0);
+    if (!canExport) return;
+    let cancelled = false;
     fetch(`/meta/${gen.id}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((m) => {
-        if (!cancelled && m?.fps) setMeta({ fps: m.fps, frames: m.frames })
+        if (!cancelled && m?.fps) setMeta({ fps: m.fps, frames: m.frames });
       })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [gen.id, canExport])
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [gen.id, canExport]);
 
   // 現在表示中フレーム番号を追跡（requestVideoFrameCallback 優先、無ければ timeupdate）
   useEffect(() => {
-    const video = videoRef.current
-    if (!video || !meta?.fps) return
-    const toFrame = (t: number) => setCurrentFrame(Math.round(t * meta.fps))
+    const video = videoRef.current;
+    if (!video || !meta?.fps) return;
+    const toFrame = (t: number) => setCurrentFrame(Math.round(t * meta.fps));
 
     if (typeof video.requestVideoFrameCallback === 'function') {
-      let handle = 0
+      let handle = 0;
       const tick = (_now: number, md: VideoFrameCallbackMetadata) => {
-        toFrame(md.mediaTime)
-        handle = video.requestVideoFrameCallback(tick)
-      }
-      handle = video.requestVideoFrameCallback(tick)
-      return () => video.cancelVideoFrameCallback(handle)
+        toFrame(md.mediaTime);
+        handle = video.requestVideoFrameCallback(tick);
+      };
+      handle = video.requestVideoFrameCallback(tick);
+      return () => video.cancelVideoFrameCallback(handle);
     }
 
-    const onUpdate = () => toFrame(video.currentTime)
-    video.addEventListener('timeupdate', onUpdate)
-    video.addEventListener('seeked', onUpdate)
+    const onUpdate = () => toFrame(video.currentTime);
+    video.addEventListener('timeupdate', onUpdate);
+    video.addEventListener('seeked', onUpdate);
     return () => {
-      video.removeEventListener('timeupdate', onUpdate)
-      video.removeEventListener('seeked', onUpdate)
-    }
-  }, [meta])
+      video.removeEventListener('timeupdate', onUpdate);
+      video.removeEventListener('seeked', onUpdate);
+    };
+  }, [meta]);
 
   return (
     <div className="video-modal-layout">
@@ -138,12 +139,12 @@ function VideoModalContent({
             muted={!soundEnabled}
             playsInline
             onLoadedMetadata={(e) => {
-              const v = e.currentTarget
-              setActualDim({ w: v.videoWidth, h: v.videoHeight })
+              const v = e.currentTarget;
+              setActualDim({ w: v.videoWidth, h: v.videoHeight });
             }}
             onVolumeChange={(e) => {
-              const video = e.currentTarget
-              onSoundChange(!video.muted && video.volume > 0)
+              const video = e.currentTarget;
+              onSoundChange(!video.muted && video.volume > 0);
             }}
           />
         ) : (
@@ -152,11 +153,7 @@ function VideoModalContent({
       </div>
 
       <aside className="video-modal-details" aria-label="Video prompt and details">
-        {title && (
-          <h2 className="video-modal-title">
-            {title}
-          </h2>
-        )}
+        {title && <h2 className="video-modal-title">{title}</h2>}
 
         <div className="video-modal-prompt-header">
           <span className="video-modal-section-label">Prompt</span>
@@ -173,13 +170,9 @@ function VideoModalContent({
         </div>
 
         {prompt ? (
-          <p className="video-modal-prompt">
-            {prompt}
-          </p>
+          <p className="video-modal-prompt">{prompt}</p>
         ) : (
-          <p className="video-modal-prompt video-modal-prompt-empty">
-            (プロンプトなし)
-          </p>
+          <p className="video-modal-prompt video-modal-prompt-empty">(プロンプトなし)</p>
         )}
 
         <div className="video-modal-resolution">
@@ -238,7 +231,8 @@ function VideoModalContent({
             </div>
             {meta && (
               <div className="video-modal-frame-hint">
-                全 {meta.frames} フレーム · {meta.fps.toFixed(0)} fps（空欄なら現在のフレームを保存）
+                全 {meta.frames} フレーム · {meta.fps.toFixed(0)}{' '}
+                fps（空欄なら現在のフレームを保存）
               </div>
             )}
           </section>
@@ -251,7 +245,7 @@ function VideoModalContent({
         </div>
       </aside>
     </div>
-  )
+  );
 }
 
 export function VideoModal({
@@ -260,15 +254,17 @@ export function VideoModal({
   soundEnabled,
   onSoundChange,
 }: {
-  selected: Generation | null
-  onClose: () => void
-  soundEnabled: boolean
-  onSoundChange: (enabled: boolean) => void
+  selected: Generation | null;
+  onClose: () => void;
+  soundEnabled: boolean;
+  onSoundChange: (enabled: boolean) => void;
 }) {
   return (
     <ModalOverlay
       isOpen={selected !== null}
-      onOpenChange={(open) => { if (!open) onClose() }}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
       isDismissable
       className="modal-overlay"
     >
@@ -285,5 +281,5 @@ export function VideoModal({
         </Dialog>
       </Modal>
     </ModalOverlay>
-  )
+  );
 }
