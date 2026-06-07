@@ -9,6 +9,9 @@ export default defineConfig({
       '/api': 'http://localhost:3001',
       '/video': 'http://localhost:3001',
       '/thumbnail': 'http://localhost:3001',
+      '/audio': 'http://localhost:3001',
+      '/frame': 'http://localhost:3001',
+      '/meta': 'http://localhost:3001',
     },
   },
 })
