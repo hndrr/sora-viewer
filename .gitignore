@@ -3,6 +3,7 @@ dist/
 dist-electron/
 release/
 .thumbs/
+.sora-viewer.json
 
 # データディレクトリ: 中身はignore、ディレクトリ自体は維持
 mov/*
