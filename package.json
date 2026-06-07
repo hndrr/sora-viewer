@@ -3,10 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Sora2 エクスポート動画のローカルビューワー（Web / Electron デスクトップ両対応）",
+  "author": "hndrr",
+  "license": "MIT",
+  "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -n server,vite -c cyan,magenta \"tsx watch server/index.ts\" \"vite\"",
-    "build": "vite build",
-    "server": "tsx server/index.ts"
+    "dev": "concurrently -n server,vite -c cyan,magenta \"tsx watch server/cli.ts\" \"vite\"",
+    "server": "tsx server/cli.ts",
+    "build": "vite build && node scripts/build-electron.mjs",
+    "build:electron": "node scripts/build-electron.mjs",
+    "serve": "npm run build && node dist-electron/server.cjs",
+    "dev:electron": "node scripts/build-electron.mjs && concurrently -k -n vite,electron -c magenta,cyan \"vite\" \"cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron dist-electron/main.cjs\"",
+    "dist": "npm run build && electron-builder",
+    "dist:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
@@ -21,8 +30,45 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.5.2",
     "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.hndrr.soraviewer",
+    "productName": "Sora Viewer",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "!node_modules/**/*",
+      "!**/._*",
+      "!**/.DS_Store"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo"
+    }
   }
 }
