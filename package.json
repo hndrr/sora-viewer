@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n server,vite -c cyan,magenta \"tsx watch server.ts\" \"vite\"",
+    "dev": "concurrently -n server,vite -c cyan,magenta \"tsx watch server/index.ts\" \"vite\"",
     "build": "vite build",
-    "server": "tsx server.ts"
+    "server": "tsx server/index.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

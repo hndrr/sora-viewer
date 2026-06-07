@@ -1,7 +1,12 @@
 node_modules/
 dist/
-mov/
-json/
 .thumbs/
-src/._index.css
-._.gitignore
+
+# データディレクトリ: 中身はignore、ディレクトリ自体は維持
+mov/*
+!mov/.gitkeep
+json/*
+!json/.gitkeep
+
+# macOS resource fork
+._*

@@ -7,14 +7,15 @@ import { fileURLToPath } from 'url'
 import { execFile } from 'child_process'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const ROOT_DIR = path.resolve(__dirname, '..')
 
 const JSON_DIR = process.env.SORA_JSON_DIR
   ? path.resolve(process.env.SORA_JSON_DIR)
-  : path.resolve(__dirname, 'json')
+  : path.resolve(ROOT_DIR, 'json')
 const MOV_DIR = process.env.SORA_MOV_DIR
   ? path.resolve(process.env.SORA_MOV_DIR)
-  : path.resolve(__dirname, 'mov')
-const THUMB_DIR = path.resolve(__dirname, '.thumbs')
+  : path.resolve(ROOT_DIR, 'mov')
+const THUMB_DIR = path.resolve(ROOT_DIR, '.thumbs')
 
 // サムネイルキャッシュディレクトリを作成
 if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true })
@@ -28,30 +29,44 @@ function loadManifest() {
   )
 
   const entries: Record<string, unknown>[] = []
-  for (const fname of fs.readdirSync(JSON_DIR).sort()) {
-    if (!fname.endsWith('-generations.json')) continue
-    const raw = JSON.parse(fs.readFileSync(path.join(JSON_DIR, fname), 'utf-8')) as Record<string, unknown>[]
-    for (const e of raw) {
-      e._source = fname
-      e._local  = mp4Set.has(e.id as string)
+
+  for (const name of fs.readdirSync(JSON_DIR).sort()) {
+    const fullPath = path.join(JSON_DIR, name)
+    const stat = fs.statSync(fullPath)
+
+    if (stat.isFile() && name.endsWith('-generations.json') && !name.startsWith('._')) {
+      // パターン1: json/sora-data-files-export-1-generations.json
+      const raw = JSON.parse(fs.readFileSync(fullPath, 'utf-8')) as Record<string, unknown>[]
+      for (const e of raw) {
+        e._source = name
+        e._local  = mp4Set.has(e.id as string)
+      }
+      entries.push(...raw)
+    } else if (stat.isDirectory()) {
+      // パターン2: json/sora-data-files-export-1/generations.json
+      const genFile = path.join(fullPath, 'generations.json')
+      if (fs.existsSync(genFile)) {
+        const raw = JSON.parse(fs.readFileSync(genFile, 'utf-8')) as Record<string, unknown>[]
+        for (const e of raw) {
+          e._source = `${name}/generations.json`
+          e._local  = mp4Set.has(e.id as string)
+        }
+        entries.push(...raw)
+      }
     }
-    entries.push(...raw)
   }
 
   // IDから時系列でソート（新しい順）
   const CROCKFORD = '0123456789abcdefghjkmnpqrstvwxyz'
   function idToTimestamp(id: string): number {
-    // gen_ プレフィックスを除去
     const raw = id.startsWith('gen_') ? id.slice(4) : id
     if (raw.startsWith('01k') || raw.startsWith('01j') || raw.startsWith('01m')) {
-      // ULID (Crockford Base32): 先頭10文字がタイムスタンプ
       let ts = 0
       for (let i = 0; i < Math.min(10, raw.length); i++) {
         ts = ts * 32 + CROCKFORD.indexOf(raw[i].toLowerCase())
       }
       return ts
     } else {
-      // HEX: 先頭8文字がタイムスタンプ (秒)
       return parseInt(raw.slice(0, 8), 16) * 1000
     }
   }
@@ -71,10 +86,10 @@ function generateThumbnail(videoPath: string, thumbPath: string): Promise<void> 
   return new Promise((resolve, reject) => {
     execFile('ffmpeg', [
       '-i', videoPath,
-      '-ss', '0.5',        // 0.5秒目のフレーム
+      '-ss', '0.5',
       '-vframes', '1',
-      '-vf', 'scale=480:-2',  // 幅480px、アスペクト比維持
-      '-q:v', '6',          // JPEG品質 (2=高品質, 31=低品質)
+      '-vf', 'scale=480:-2',
+      '-q:v', '6',
       '-y',
       thumbPath,
     ], (err) => {
@@ -90,7 +105,6 @@ app.use('*', cors())
 
 app.get('/api/manifest', c => c.json(manifest))
 
-// サムネイル: 遅延生成 + キャッシュ
 app.get('/thumbnail/:id', async c => {
   const id = c.req.param('id')
   const thumbPath = path.join(THUMB_DIR, `${id}.jpg`)
@@ -98,7 +112,6 @@ app.get('/thumbnail/:id', async c => {
 
   if (!fs.existsSync(videoPath)) return c.notFound()
 
-  // キャッシュがなければ生成
   if (!fs.existsSync(thumbPath)) {
     try {
       await generateThumbnail(videoPath, thumbPath)
