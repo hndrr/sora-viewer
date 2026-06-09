@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ViewerDataSource, ZipLoadResult } from '../dataSources/types';
 import { FolderBrowser } from './FolderBrowser';
 
 declare global {
@@ -10,15 +11,8 @@ declare global {
   }
 }
 
-interface ConfigStatus {
-  jsonDir: string | null;
-  movDir: string | null;
-  jsonCount: number;
-  movCount: number;
-  configured: boolean;
-}
-
 interface Props {
+  dataSource: ViewerDataSource;
   onDone: () => void;
 }
 
@@ -89,16 +83,27 @@ const S = {
   },
   launchOff: { background: '#232323', borderColor: '#2f2f2f', color: '#666', cursor: 'default' },
   err: { fontSize: 12, color: '#e08a8a' },
+  fileInput: {
+    width: '100%',
+    background: '#131313',
+    border: '1px solid #333',
+    borderRadius: 8,
+    padding: '10px 12px',
+    color: '#ddd',
+    fontSize: 13,
+  },
 };
 
-export function Setup({ onDone }: Props) {
-  const [cfg, setCfg] = useState<ConfigStatus | null>(null);
+export function Setup({ dataSource, onDone }: Props) {
+  const [cfg, setCfg] = useState<Awaited<ReturnType<ViewerDataSource['getConfig']>> | null>(null);
   const [error, setError] = useState('');
   const [browserFor, setBrowserFor] = useState<'json' | 'mov' | null>(null);
+  const [zipResult, setZipResult] = useState<ZipLoadResult | null>(null);
+  const [zipLoading, setZipLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/config')
-      .then((r) => r.json())
+    dataSource
+      .getConfig()
       .then(setCfg)
       .catch(() =>
         setCfg({
@@ -109,21 +114,17 @@ export function Setup({ onDone }: Props) {
           configured: false,
         }),
       );
-  }, []);
+  }, [dataSource]);
 
   async function applyDir(which: 'json' | 'mov', dir: string) {
     setError('');
-    const res = await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [`${which}Dir`]: dir }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data.error ?? '設定に失敗しました');
+    if (!dataSource.applyDir) return;
+    try {
+      setCfg(await dataSource.applyDir(which, dir));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '設定に失敗しました');
       return;
     }
-    setCfg(data);
   }
 
   async function pick(which: 'json' | 'mov') {
@@ -137,6 +138,22 @@ export function Setup({ onDone }: Props) {
       if (dir) await applyDir(which, dir);
     } else {
       setBrowserFor(which);
+    }
+  }
+
+  async function loadZip(file: File | undefined) {
+    if (!file || !dataSource.loadZipFile) return;
+    setError('');
+    setZipLoading(true);
+    try {
+      const result = await dataSource.loadZipFile(file);
+      setZipResult(result);
+      setCfg(await dataSource.getConfig());
+    } catch (e) {
+      setZipResult(null);
+      setError(e instanceof Error ? e.message : 'ZIP の読み込みに失敗しました');
+    } finally {
+      setZipLoading(false);
     }
   }
 
@@ -165,6 +182,58 @@ export function Setup({ onDone }: Props) {
       </div>
     );
   };
+
+  if (dataSource.mode === 'browser-zip') {
+    const zipReady = !!cfg?.configured;
+
+    return (
+      <div style={S.page}>
+        <div style={S.wrap}>
+          <h1 style={S.h1}>🎬 ZIP を選択</h1>
+          <p style={S.lead}>
+            Sora2 のエクスポート ZIP を選択してください。
+            <br />
+            ファイルはアップロードされず、このブラウザ内だけで読み込まれます。
+          </p>
+
+          <div style={S.card}>
+            <h2 style={S.h2}>Sora export ZIP</h2>
+            <p style={S.desc}>
+              <code style={S.code}>sora-data-files-export-*.zip</code> 内の{' '}
+              <code style={S.code}>generations.json</code> /{' '}
+              <code style={S.code}>*-generations.json</code> と{' '}
+              <code style={S.code}>{'{generation_id}.mp4'}</code> を検出します。
+            </p>
+            <input
+              style={S.fileInput}
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              disabled={zipLoading}
+              onChange={(e) => loadZip(e.currentTarget.files?.[0])}
+            />
+            {zipLoading && <div style={S.stat}>ZIP を読み込み中…</div>}
+            {zipResult && (
+              <div style={{ ...S.stat, ...S.statOk }}>
+                ✓ {zipResult.generationCount} 件 / 再生可能 {zipResult.playableCount} 件 （JSON{' '}
+                {zipResult.jsonCount}、MP4 {zipResult.movCount}）
+              </div>
+            )}
+          </div>
+
+          <div style={S.footer}>
+            <button
+              style={{ ...S.launch, ...(zipReady ? {} : S.launchOff) }}
+              disabled={!zipReady}
+              onClick={onDone}
+            >
+              起動
+            </button>
+            {error && <span style={S.err}>{error}</span>}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={S.page}>
@@ -224,6 +293,11 @@ export function Setup({ onDone }: Props) {
         <FolderBrowser
           title={browserFor === 'json' ? 'JSON フォルダを選択' : 'mov フォルダを選択'}
           initialPath={browserFor === 'json' ? cfg?.jsonDir : cfg?.movDir}
+          browseDir={(path) =>
+            dataSource.browseDir
+              ? dataSource.browseDir(path)
+              : Promise.reject(new Error('フォルダブラウザはこのモードでは使えません'))
+          }
           onSelect={async (dir) => {
             const w = browserFor;
             setBrowserFor(null);
