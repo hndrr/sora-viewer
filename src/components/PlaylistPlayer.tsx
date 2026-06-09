@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import type { ViewerDataSource } from '../dataSources/types';
 import type { Generation } from '../types';
 import { useVideoPlaybackMeta, VideoDetailsPanel } from './VideoDetailsPanel';
 
@@ -59,6 +60,7 @@ export function PlaylistPlayer({
   initialRepeatOne,
   initialShowDetails,
   soundEnabled,
+  dataSource,
   onSoundChange,
   onClose,
 }: {
@@ -68,6 +70,7 @@ export function PlaylistPlayer({
   initialRepeatOne: boolean;
   initialShowDetails: boolean;
   soundEnabled: boolean;
+  dataSource: ViewerDataSource;
   onSoundChange: (enabled: boolean) => void;
   onClose: () => void;
 }) {
@@ -98,17 +101,33 @@ export function PlaylistPlayer({
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
 
   const current = playlist[order[pos]] as Generation | undefined;
-  const src = current ? (current._local ? `/video/${current.id}` : current.url) : '';
+  const [src, setSrc] = useState('');
   const title = current && current.title && current.title !== 'New Video' ? current.title : '';
-  const canExport = !!current?._local;
   const { actualDim, meta, currentFrame } = useVideoPlaybackMeta(
     videoRef,
-    current?.id ?? '',
-    canExport,
+    current ?? null,
+    dataSource,
   );
 
   // コントロール（バー/上部情報/カーソル）の表示。詳細を開いている間は常に表示。
   const controlsVisible = barVisible || showDetails;
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc('');
+    if (!current) return;
+    dataSource
+      .getVideoSrc(current)
+      .then((nextSrc) => {
+        if (!cancelled) setSrc(nextSrc ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) setSrc('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [current, dataSource]);
 
   // ── 前後移動（手動操作は repeat に関係なく端でラップ）──────────────────
   const go = useCallback(
@@ -391,6 +410,8 @@ export function PlaylistPlayer({
             currentFrame={currentFrame}
             meta={meta}
             actualDim={actualDim}
+            dataSource={dataSource}
+            videoRef={videoRef}
           />
         </div>
       )}

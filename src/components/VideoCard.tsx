@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ViewerDataSource } from '../dataSources/types';
 import type { Generation } from '../types';
 
 const S = {
@@ -66,11 +67,13 @@ function aspectRatio(w: number, h: number) {
 
 export function VideoCard({
   gen,
+  dataSource,
   onSelect,
   previewSoundEnabled,
   onSoundBlocked,
 }: {
   gen: Generation;
+  dataSource: ViewerDataSource;
   onSelect: (g: Generation) => void;
   previewSoundEnabled: boolean;
   onSoundBlocked: () => void;
@@ -79,13 +82,15 @@ export function VideoCard({
   const [previewActive, setPreviewActive] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
   const [thumbError, setThumbError] = useState(false);
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverActiveRef = useRef(false);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
 
-  const thumbSrc = gen._local ? `/thumbnail/${gen.id}` : undefined;
-  const previewSrc = gen._local ? `/video/${gen.id}` : undefined;
   const prompt = gen.prompt?.trim() ?? '';
   const title = gen.title && gen.title !== 'New Video' ? gen.title : '';
+  const playable = dataSource.canPlay(gen);
   const showPreview = previewActive && previewSrc;
   const stopPreview = () => {
     if (previewVideoRef.current) {
@@ -124,6 +129,23 @@ export function VideoCard({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    setThumbError(false);
+    setThumbSrc(null);
+    dataSource
+      .getThumbnailSrc(gen)
+      .then((src) => {
+        if (!cancelled) setThumbSrc(src);
+      })
+      .catch(() => {
+        if (!cancelled) setThumbError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataSource, gen]);
+
+  useEffect(() => {
     const video = previewVideoRef.current;
     if (!video) return;
 
@@ -142,13 +164,22 @@ export function VideoCard({
       style={{ ...S.card, ...(hovered ? S.cardHover : {}) }}
       onMouseEnter={() => {
         setHovered(true);
-        if (!previewSrc) return;
+        hoverActiveRef.current = true;
+        if (!playable) return;
         hoverTimerRef.current = setTimeout(() => {
-          setPreviewActive(true);
+          dataSource
+            .getVideoSrc(gen)
+            .then((src) => {
+              if (!src || !hoverActiveRef.current) return;
+              setPreviewSrc(src);
+              setPreviewActive(true);
+            })
+            .catch(() => {});
         }, 260);
       }}
       onMouseLeave={() => {
         setHovered(false);
+        hoverActiveRef.current = false;
         stopPreview();
       }}
       onClick={() => {
@@ -176,7 +207,7 @@ export function VideoCard({
               fontSize: 12,
             }}
           >
-            {gen._local ? '▶' : 'URL'}
+            {playable ? '▶' : 'なし'}
           </div>
         )}
 
@@ -207,7 +238,8 @@ export function VideoCard({
             <polygon points="19,14 19,34 36,24" fill="rgba(255,255,255,.9)" />
           </svg>
         </div>
-        {!gen._local && <span style={S.badge}>URL</span>}
+        {gen.mediaKind === 'remote-url' && <span style={S.badge}>URL</span>}
+        {gen.mediaKind === 'missing' && <span style={S.badge}>NO MP4</span>}
       </div>
 
       <div style={S.meta}>

@@ -3,6 +3,10 @@ import { Switch } from 'react-aria-components';
 import { PlaylistPlayer } from './components/PlaylistPlayer';
 import { Setup } from './components/Setup';
 import { VideoCard } from './components/VideoCard';
+import { resolveViewerMode } from './dataSources/mode';
+import { createServerDataSource } from './dataSources/serverDataSource';
+import type { ViewerDataSource } from './dataSources/types';
+import { createZipDataSource } from './dataSources/zipDataSource';
 import type { Generation } from './types';
 
 // ── Prompt 内の @avatar を抽出 ───────────────────────────────────────────
@@ -145,7 +149,13 @@ function loadSoundEnabled() {
   }
 }
 
+function createDataSource(): ViewerDataSource {
+  const mode = resolveViewerMode();
+  return mode === 'browser-zip' ? createZipDataSource() : createServerDataSource();
+}
+
 export default function App() {
+  const dataSource = useMemo(() => createDataSource(), []);
   const [phase, setPhase] = useState<'loading' | 'setup' | 'app'>('loading');
   const [all, setAll] = useState<Generation[]>([]);
   const [query, setQuery] = useState('');
@@ -165,14 +175,16 @@ export default function App() {
 
   const loadManifestData = useCallback(() => {
     setLoading(true);
-    fetch('/api/manifest')
-      .then((r) => r.json())
-      .then((data: Generation[]) => {
+    dataSource
+      .loadManifest()
+      .then((data) => {
         setAll(data);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [dataSource]);
+
+  useEffect(() => () => dataSource.dispose(), [dataSource]);
 
   useEffect(() => {
     try {
@@ -188,8 +200,8 @@ export default function App() {
 
   useEffect(() => {
     const forceSetup = new URLSearchParams(location.search).get('setup') === '1';
-    fetch('/api/config')
-      .then((r) => r.json())
+    dataSource
+      .getConfig()
       .then((cfg: { configured: boolean }) => {
         if (cfg.configured && !forceSetup) {
           setPhase('app');
@@ -199,7 +211,7 @@ export default function App() {
         }
       })
       .catch(() => setPhase('setup'));
-  }, [loadManifestData]);
+  }, [dataSource, loadManifestData]);
 
   const handleSetupDone = useCallback(() => {
     // ?setup=1 を URL から消してから本体へ
@@ -267,7 +279,10 @@ export default function App() {
   const hasMore = visibleCount < filtered.length;
 
   // 連続再生の対象（src を持つもの）。絞り込み結果をそのまま順序として使う。
-  const playable = useMemo(() => filtered.filter((g) => g._local || g.url), [filtered]);
+  const playable = useMemo(
+    () => filtered.filter((g) => dataSource.canPlay(g)),
+    [dataSource, filtered],
+  );
 
   // 「フルスクリーン再生」: 先頭から連続再生
   const startPlayback = () => {
@@ -281,7 +296,7 @@ export default function App() {
   };
 
   if (phase === 'loading') return <div style={S.empty}>Loading…</div>;
-  if (phase === 'setup') return <Setup onDone={handleSetupDone} />;
+  if (phase === 'setup') return <Setup dataSource={dataSource} onDone={handleSetupDone} />;
 
   return (
     <>
@@ -422,6 +437,7 @@ export default function App() {
             <VideoCard
               key={g.id}
               gen={g}
+              dataSource={dataSource}
               onSelect={openSingle}
               previewSoundEnabled={previewSoundEnabled}
               onSoundBlocked={handleSoundBlocked}
@@ -440,6 +456,7 @@ export default function App() {
           initialRepeatOne={player.repeatOne}
           initialShowDetails={player.details}
           soundEnabled={previewSoundEnabled}
+          dataSource={dataSource}
           onSoundChange={setPreviewSoundEnabled}
           onClose={() => setPlayer(null)}
         />
