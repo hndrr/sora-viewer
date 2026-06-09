@@ -189,8 +189,10 @@ export function PlaylistPlayer({
     const player = playerRef.current;
     if (!player) return;
     if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    } else {
+      if (typeof document.exitFullscreen === 'function') {
+        document.exitFullscreen().catch(() => {});
+      }
+    } else if (typeof player.requestFullscreen === 'function') {
       player.requestFullscreen().catch(() => {});
     }
   }, []);
@@ -274,6 +276,7 @@ export function PlaylistPlayer({
   useEffect(() => {
     const onFullscreenChange = () => {
       setIsFullscreen(document.fullscreenElement === playerRef.current);
+      setBarPos(null);
     };
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
