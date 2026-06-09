@@ -517,7 +517,11 @@ export function PlaylistPlayer({
             aria-pressed={isFullscreen}
             aria-label={isFullscreen ? 'フルスクリーン解除' : 'フルスクリーン'}
           >
-            {isFullscreen ? <Minimize2 size={18} aria-hidden /> : <Maximize2 size={18} aria-hidden />}
+            {isFullscreen ? (
+              <Minimize2 size={18} aria-hidden />
+            ) : (
+              <Maximize2 size={18} aria-hidden />
+            )}
           </button>
           <button
             type="button"
