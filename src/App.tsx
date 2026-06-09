@@ -224,6 +224,7 @@ export default function App() {
   }, [all]);
 
   const toggleAvatar = (name: string) => {
+    setVisibleCount(PAGE_SIZE);
     setSelectedAvatars((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
@@ -246,10 +247,6 @@ export default function App() {
     }
     return result;
   }, [all, query, selectedAvatars]);
-
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [query, selectedAvatars]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -325,7 +322,10 @@ export default function App() {
           type="text"
           placeholder="プロンプトで検索…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setVisibleCount(PAGE_SIZE);
+          }}
         />
         <span style={S.count}>
           {loading ? (
@@ -384,7 +384,10 @@ export default function App() {
                 background: '#2a1a1a',
                 marginRight: 4,
               }}
-              onClick={() => setSelectedAvatars(new Set())}
+              onClick={() => {
+                setSelectedAvatars(new Set());
+                setVisibleCount(PAGE_SIZE);
+              }}
             >
               ✕ クリア
             </span>
