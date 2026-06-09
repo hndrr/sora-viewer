@@ -1,6 +1,8 @@
 import {
   GripVertical,
   Info,
+  Maximize2,
+  Minimize2,
   Pause,
   Play,
   Repeat1,
@@ -70,7 +72,7 @@ export function PlaylistPlayer({
   onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<HTMLDivElement>(null);
   const total = playlist.length;
 
   const [shuffle, setShuffle] = useState(initialShuffle);
@@ -88,6 +90,7 @@ export function PlaylistPlayer({
   const [showDetails, setShowDetails] = useState(initialShowDetails);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // フローティングバーのドラッグ移動（ステージ基準の相対座標）
   const barElRef = useRef<HTMLDivElement>(null);
@@ -182,6 +185,18 @@ export function PlaylistPlayer({
     }
   }, []);
 
+  const toggleFullscreen = useCallback(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    if (document.fullscreenElement) {
+      if (typeof document.exitFullscreen === 'function') {
+        document.exitFullscreen().catch(() => {});
+      }
+    } else if (typeof player.requestFullscreen === 'function') {
+      player.requestFullscreen().catch(() => {});
+    }
+  }, []);
+
   // ── src 変更時に自動再生＋音声適用（VideoModal のパターンを踏襲）────────
   useEffect(() => {
     const v = videoRef.current;
@@ -248,11 +263,24 @@ export function PlaylistPlayer({
         case 'I':
           setShowDetails((v) => !v);
           break;
+        case 'f':
+        case 'F':
+          toggleFullscreen();
+          break;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [next, prev, togglePlay, onClose, toggleShuffle, toggleRepeatOne]);
+  }, [next, prev, togglePlay, onClose, toggleShuffle, toggleRepeatOne, toggleFullscreen]);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === playerRef.current);
+      setBarPos(null);
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
 
   // ── コントロールバーの auto-hide（再生中のみ隠す）──────────────────────
   const showBar = useCallback(() => {
@@ -268,10 +296,10 @@ export function PlaylistPlayer({
   // ── フローティングバーのドラッグ移動（グリップを掴んでステージ内に配置）──
   const onDragStart = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     const bar = barElRef.current;
-    const stage = stageRef.current;
-    if (!bar || !stage) return;
+    const player = playerRef.current;
+    if (!bar || !player) return;
     const rect = bar.getBoundingClientRect();
-    const sr = stage.getBoundingClientRect();
+    const sr = player.getBoundingClientRect();
     dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
     setBarPos({ x: rect.left - sr.left, y: rect.top - sr.top });
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -281,9 +309,9 @@ export function PlaylistPlayer({
   const onDragMove = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     if (!dragRef.current) return;
     const bar = barElRef.current;
-    const stage = stageRef.current;
-    if (!bar || !stage) return;
-    const sr = stage.getBoundingClientRect();
+    const player = playerRef.current;
+    if (!bar || !player) return;
+    const sr = player.getBoundingClientRect();
     const w = bar.offsetWidth;
     const h = bar.offsetHeight;
     const x = Math.max(8, Math.min(e.clientX - dragRef.current.dx - sr.left, sr.width - w - 8));
@@ -291,9 +319,20 @@ export function PlaylistPlayer({
     setBarPos({ x, y });
   }, []);
 
+  const onBarPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLElement>) => {
+      const target = e.target;
+      if (target instanceof Element && target.closest('button,input,a,select,textarea')) return;
+      onDragStart(e);
+    },
+    [onDragStart],
+  );
+
   const onDragEnd = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     dragRef.current = null;
-    e.currentTarget.releasePointerCapture(e.pointerId);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
   }, []);
 
   useEffect(() => {
@@ -307,9 +346,11 @@ export function PlaylistPlayer({
 
   return (
     <div
+      ref={playerRef}
       className={`playlist-player${showDetails ? ' with-details' : ''}${controlsVisible ? '' : ' bar-hidden'}`}
+      onMouseMove={showBar}
     >
-      <div className="playlist-stage" ref={stageRef} onMouseMove={showBar}>
+      <div className="playlist-stage">
         {src ? (
           <video
             ref={videoRef}
@@ -332,134 +373,6 @@ export function PlaylistPlayer({
             <span className="playlist-topbar-title">{title}</span>
           </div>
         )}
-
-        <div
-          ref={barElRef}
-          className={`playlist-bar${controlsVisible ? '' : ' hidden'}`}
-          style={
-            barPos
-              ? { left: barPos.x, top: barPos.y, right: 'auto', bottom: 'auto', transform: 'none' }
-              : undefined
-          }
-          role="toolbar"
-          aria-label="再生コントロール"
-        >
-          <div className="playlist-seek-row">
-            <span
-              className="playlist-drag-handle"
-              onPointerDown={onDragStart}
-              onPointerMove={onDragMove}
-              onPointerUp={onDragEnd}
-              title="ドラッグで移動"
-            >
-              <GripVertical size={16} aria-hidden />
-            </span>
-            <span className="playlist-time">{formatTime(currentTime)}</span>
-            <input
-              type="range"
-              className="playlist-seek"
-              min={0}
-              max={duration || 0}
-              step="any"
-              value={Math.min(currentTime, duration || 0)}
-              onChange={(e) => seek(Number(e.target.value))}
-              style={{
-                background: `linear-gradient(to right, #5f8ee8 ${seekPct}%, rgba(255,255,255,.2) ${seekPct}%)`,
-              }}
-              aria-label="シーク"
-            />
-            <span className="playlist-time">{formatTime(duration)}</span>
-          </div>
-
-          <div className="playlist-controls-row">
-            <button
-              type="button"
-              className="playlist-bar-btn"
-              onClick={prev}
-              title="前へ (←)"
-              aria-label="前へ"
-            >
-              <SkipBack size={20} aria-hidden />
-            </button>
-            <button
-              type="button"
-              className="playlist-bar-btn playlist-bar-play"
-              onClick={togglePlay}
-              title="再生 / 一時停止 (Space)"
-              aria-label={paused ? '再生' : '一時停止'}
-            >
-              {paused ? <Play size={22} aria-hidden /> : <Pause size={22} aria-hidden />}
-            </button>
-            <button
-              type="button"
-              className="playlist-bar-btn"
-              onClick={next}
-              title="次へ (→)"
-              aria-label="次へ"
-            >
-              <SkipForward size={20} aria-hidden />
-            </button>
-
-            <span className="playlist-bar-index">
-              {total === 0 ? 0 : pos + 1} / {total}
-            </span>
-
-            <span className="playlist-bar-divider" />
-
-            <button
-              type="button"
-              className={`playlist-bar-btn${shuffle ? ' active' : ''}`}
-              onClick={toggleShuffle}
-              title="ランダム (S)"
-              aria-pressed={shuffle}
-              aria-label="ランダム再生"
-            >
-              <Shuffle size={18} aria-hidden />
-            </button>
-            <button
-              type="button"
-              className={`playlist-bar-btn${repeatOne ? ' active' : ''}`}
-              onClick={toggleRepeatOne}
-              title={repeatOne ? '1本リピート: ON (R)' : '1本リピート: OFF (R)'}
-              aria-pressed={repeatOne}
-              aria-label="1本リピート"
-            >
-              <Repeat1 size={18} aria-hidden />
-            </button>
-            <button
-              type="button"
-              className={`playlist-bar-btn${soundEnabled ? ' active' : ''}`}
-              onClick={toggleSound}
-              title="音声"
-              aria-pressed={soundEnabled}
-              aria-label="音声切替"
-            >
-              {soundEnabled ? <Volume2 size={18} aria-hidden /> : <VolumeX size={18} aria-hidden />}
-            </button>
-
-            <span className="playlist-bar-divider" />
-
-            <button
-              type="button"
-              className={`playlist-bar-btn${showDetails ? ' active' : ''}`}
-              onClick={() => setShowDetails((v) => !v)}
-              title="詳細 (I)"
-              aria-pressed={showDetails}
-              aria-label="詳細"
-            >
-              <Info size={18} aria-hidden />
-            </button>
-            <button
-              type="button"
-              className="playlist-bar-btn"
-              onClick={onClose}
-              title="閉じる (Esc)"
-              aria-label="閉じる"
-            >
-              <X size={20} aria-hidden />
-            </button>
-          </div>
-        </div>
       </div>
 
       {showDetails && current && (
@@ -481,6 +394,146 @@ export function PlaylistPlayer({
           />
         </div>
       )}
+
+      <div
+        ref={barElRef}
+        className={`playlist-bar${controlsVisible ? '' : ' hidden'}`}
+        style={
+          barPos
+            ? { left: barPos.x, top: barPos.y, right: 'auto', bottom: 'auto', transform: 'none' }
+            : undefined
+        }
+        role="toolbar"
+        aria-label="再生コントロール"
+        onPointerDown={onBarPointerDown}
+        onPointerMove={onDragMove}
+        onPointerUp={onDragEnd}
+        onPointerCancel={onDragEnd}
+      >
+        <div className="playlist-seek-row">
+          <span className="playlist-drag-handle" title="ドラッグで移動">
+            <GripVertical size={16} aria-hidden />
+          </span>
+          <span className="playlist-time">{formatTime(currentTime)}</span>
+          <input
+            type="range"
+            className="playlist-seek"
+            min={0}
+            max={duration || 0}
+            step="any"
+            value={Math.min(currentTime, duration || 0)}
+            onChange={(e) => seek(Number(e.target.value))}
+            style={{
+              background: `linear-gradient(to right, #5f8ee8 ${seekPct}%, rgba(255,255,255,.2) ${seekPct}%)`,
+            }}
+            aria-label="シーク"
+          />
+          <span className="playlist-time">{formatTime(duration)}</span>
+        </div>
+
+        <div className="playlist-controls-row">
+          <button
+            type="button"
+            className="playlist-bar-btn"
+            onClick={prev}
+            title="前へ (←)"
+            aria-label="前へ"
+          >
+            <SkipBack size={20} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="playlist-bar-btn playlist-bar-play"
+            onClick={togglePlay}
+            title="再生 / 一時停止 (Space)"
+            aria-label={paused ? '再生' : '一時停止'}
+          >
+            {paused ? <Play size={22} aria-hidden /> : <Pause size={22} aria-hidden />}
+          </button>
+          <button
+            type="button"
+            className="playlist-bar-btn"
+            onClick={next}
+            title="次へ (→)"
+            aria-label="次へ"
+          >
+            <SkipForward size={20} aria-hidden />
+          </button>
+
+          <span className="playlist-bar-index">
+            {total === 0 ? 0 : pos + 1} / {total}
+          </span>
+
+          <span className="playlist-bar-divider" />
+
+          <button
+            type="button"
+            className={`playlist-bar-btn${shuffle ? ' active' : ''}`}
+            onClick={toggleShuffle}
+            title="ランダム (S)"
+            aria-pressed={shuffle}
+            aria-label="ランダム再生"
+          >
+            <Shuffle size={18} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={`playlist-bar-btn${repeatOne ? ' active' : ''}`}
+            onClick={toggleRepeatOne}
+            title={repeatOne ? '1本リピート: ON (R)' : '1本リピート: OFF (R)'}
+            aria-pressed={repeatOne}
+            aria-label="1本リピート"
+          >
+            <Repeat1 size={18} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={`playlist-bar-btn${soundEnabled ? ' active' : ''}`}
+            onClick={toggleSound}
+            title="音声"
+            aria-pressed={soundEnabled}
+            aria-label="音声切替"
+          >
+            {soundEnabled ? <Volume2 size={18} aria-hidden /> : <VolumeX size={18} aria-hidden />}
+          </button>
+
+          <span className="playlist-bar-divider" />
+
+          <button
+            type="button"
+            className={`playlist-bar-btn${showDetails ? ' active' : ''}`}
+            onClick={() => setShowDetails((v) => !v)}
+            title="詳細 (I)"
+            aria-pressed={showDetails}
+            aria-label="詳細"
+          >
+            <Info size={18} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={`playlist-bar-btn${isFullscreen ? ' active' : ''}`}
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'フルスクリーン解除 (F)' : 'フルスクリーン (F)'}
+            aria-pressed={isFullscreen}
+            aria-label={isFullscreen ? 'フルスクリーン解除' : 'フルスクリーン'}
+          >
+            {isFullscreen ? (
+              <Minimize2 size={18} aria-hidden />
+            ) : (
+              <Maximize2 size={18} aria-hidden />
+            )}
+          </button>
+          <button
+            type="button"
+            className="playlist-bar-btn"
+            onClick={onClose}
+            title="閉じる (Esc)"
+            aria-label="閉じる"
+          >
+            <X size={20} aria-hidden />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
