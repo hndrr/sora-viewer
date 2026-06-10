@@ -1,0 +1,16 @@
+{
+  "name": "Sora Viewer",
+  "short_name": "Sora Viewer",
+  "description": "Sora export ZIP viewer for local browser playback.",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#0d0d0d",
+  "background_color": "#0d0d0d",
+  "display": "standalone"
+}
