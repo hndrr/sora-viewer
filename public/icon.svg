@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Sora Viewer icon</title>
+  <desc id="desc">A dark rounded square with a luminous film frame and play mark.</desc>
+  <defs>
+    <linearGradient id="bg" x1="60" x2="452" y1="40" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1b1b1d"/>
+      <stop offset="0.45" stop-color="#0f1014"/>
+      <stop offset="1" stop-color="#050509"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="124" x2="392" y1="108" y2="404" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7db3ff"/>
+      <stop offset="0.52" stop-color="#c8d6ff"/>
+      <stop offset="1" stop-color="#6ee7b7"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <path fill="#101219" d="M112 146c0-26.51 21.49-48 48-48h192c26.51 0 48 21.49 48 48v220c0 26.51-21.49 48-48 48H160c-26.51 0-48-21.49-48-48V146Z"/>
+  <path fill="none" stroke="url(#accent)" stroke-linecap="round" stroke-linejoin="round" stroke-width="24" d="M160 110h192c26.51 0 48 21.49 48 48v196c0 26.51-21.49 48-48 48H160c-26.51 0-48-21.49-48-48V158c0-26.51 21.49-48 48-48Z" filter="url(#glow)"/>
+  <path fill="#20242f" d="M112 174h288v50H112zM112 288h288v50H112z"/>
+  <path fill="url(#accent)" d="M234 204c0-10.77 11.78-17.4 20.99-11.82l82.18 49.8c8.88 5.38 8.88 18.27 0 23.65l-82.18 49.8C245.78 321 234 314.37 234 303.6V204Z"/>
+  <g fill="#dbe8ff" opacity="0.82">
+    <circle cx="162" cy="153" r="12"/>
+    <circle cx="350" cy="153" r="12"/>
+    <circle cx="162" cy="359" r="12"/>
+    <circle cx="350" cy="359" r="12"/>
+  </g>
+</svg>
