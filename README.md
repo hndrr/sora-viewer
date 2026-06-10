@@ -14,6 +14,7 @@ sora-viewer/
 │   └── main.ts          #   サーバー起動 + ウィンドウ + データフォルダ選択
 ├── scripts/
 │   └── build-electron.mjs #  esbuild で main.cjs / server.cjs を生成
+├── public/              # Cloudflare Pages 用 _headers / _redirects
 ├── src/                 # フロントエンド (React + Vite) ※Web/デスクトップ共通
 │   ├── main.tsx         #   エントリーポイント
 │   ├── App.tsx          #   ルートコンポーネント（検索・無限スクロール）
@@ -30,6 +31,7 @@ sora-viewer/
 ├── release/             # electron-builder の配布物出力（gitignore 済み）
 ├── index.html
 ├── package.json
+├── wrangler.jsonc       # Cloudflare Pages 設定
 ├── vite.config.ts
 ├── tsconfig.json
 └── tsconfig.server.json
@@ -42,6 +44,7 @@ sora-viewer/
 | モード | コマンド | 開く URL | 構成 |
 | ------ | -------- | -------- | ---- |
 | **開発 (Web)** | `npm run dev` | **http://localhost:5173** | Vite(5173, HMR) がフロント配信 → API のみ Hono(3001) へプロキシ |
+| **開発 (Cloudflare Web)** | `npm run dev:cloudflare` | **http://localhost:5173** | Vite が `browser-zip` モードで起動。Node API なしで ZIP をブラウザ内で読む |
 | **ローカル Web（ビルド後）** | `npm run serve` | **http://localhost:3001** | Vite は動かさず、Hono(3001) が **ビルド済みフロント＋API を両方**配信 |
 | **デスクトップ (Electron)** | `npm run dev:electron` / ビルド版 | アプリ内ウィンドウ | Electron が Hono を内部起動。**起動中はブラウザから 3001 へも同時アクセス可** |
 
@@ -135,6 +138,14 @@ npm run dev:electron # デスクトップ開発: Vite + Electron ウィンドウ
 npm run serve        # vite build + サーバー起動 → http://localhost:3001 で全機能
 ```
 
+#### Cloudflare Pages 用 Web ビルド
+
+```bash
+npm run build:web    # browser-zip モードで dist/ を生成
+```
+
+Cloudflare Pages では Hono サーバーを使わず、`dist/` の静的ファイルだけを配信します。ユーザーの Sora ZIP/MP4 は Cloudflare にアップロードせず、ブラウザ上で選択した ZIP を `unzipit` と Blob URL で読み込みます。
+
 #### デスクトップアプリのビルド
 
 > ビルド済みバイナリは配布していません。各自でローカルにビルドしてください。
@@ -154,6 +165,38 @@ npm run dist:dir     # パッケージ化せず展開ディレクトリのみ（
 - **web**: 「フォルダを選択…」は**サーバー側フォルダブラウザ**（ブラウザは OS のパスを取得できないため）。設定はサーバーが `.sora-viewer.json` に保存。ヘッダーの ⚙ ボタン、または `?setup=1` で再設定。
 - `json/` と `mov/` がプロジェクト直下（または `SORA_JSON_DIR`/`SORA_MOV_DIR`）に存在する場合は自動検出され、設定画面はスキップされます。
 - サムネイルキャッシュは desktop=userData、web=`.thumbs/` に保存されます。
+
+### Cloudflare Pages へのデプロイ
+
+Cloudflare 版は `browser-zip` モードの静的アプリとしてデプロイします。R2、D1、KV、Pages Functions、認証は使いません。
+
+Cloudflare Dashboard で Pages project を GitHub 連携で作成し、以下を設定します。
+
+| 項目 | 値 |
+| ---- | -- |
+| Framework preset | Vite |
+| Build command | `npm run build:web` |
+| Build output directory | `dist` |
+| Node.js version | `22` 系 |
+
+`wrangler.jsonc` には Pages のプロジェクト名と build output を定義しています。
+
+```jsonc
+{
+  "name": "sora-viewer",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-06-10"
+}
+```
+
+`public/_headers` と `public/_redirects` は Vite build 時に `dist/` へコピーされ、Cloudflare Pages 上で静的アセットのキャッシュ、基本セキュリティヘッダー、SPA フォールバックに使われます。
+
+ローカルで Cloudflare Pages 相当の静的配信を確認する場合:
+
+```bash
+npm run build:web
+npx wrangler pages dev dist
+```
 
 ## 機能
 
@@ -178,9 +221,11 @@ npm run dist:dir     # パッケージ化せず展開ディレクトリのみ（
 
 ```bash
 npm run dev          # Web 開発: フロント(Vite) + サーバー(Hono) 同時起動
+npm run dev:cloudflare # Cloudflare Web 開発: browser-zip モードで Vite 起動
 npm run dev:electron # デスクトップ開発: Vite + Electron
 npm run server       # サーバーのみ起動（tsx）
 npm run build        # Vite ビルド + esbuild(main.cjs / server.cjs)
+npm run build:web    # Cloudflare Pages 用 browser-zip ビルド
 npm run serve        # build 後にサーバー単体起動（ローカル Web 完成形）
 npm run dist         # electron-builder で配布物を生成（release/）
 npm run dist:dir     # 展開ディレクトリのみ生成（動作確認用）
