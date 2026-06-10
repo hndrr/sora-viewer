@@ -1,13 +1,15 @@
 import { Check, Copy, Download } from 'lucide-react';
 import { type RefObject, useEffect, useRef, useState } from 'react';
+import type { ViewerDataSource } from '../dataSources/types';
 import type { Generation } from '../types';
 
 // 動画の再生メタ情報（実解像度・fps/総フレーム・現在フレーム）を追跡する共通フック。
-// VideoModal / PlaylistPlayer の両方で使う。
+// PlaylistPlayer / VerticalFeed の両方で使う。
+// videoEl は ref ではなく要素そのものを受け取る（要素の差し替え時にリスナーを張り直すため）。
 export function useVideoPlaybackMeta(
-  videoRef: RefObject<HTMLVideoElement | null>,
-  genId: string,
-  enabled: boolean,
+  videoEl: HTMLVideoElement | null,
+  gen: Generation | null,
+  dataSource: ViewerDataSource,
 ) {
   // manifest(JSON)の width/height は実体とズレる場合があるので実解像度を優先する
   const [actualDim, setActualDim] = useState<{ w: number; h: number } | null>(null);
@@ -15,28 +17,27 @@ export function useVideoPlaybackMeta(
   const [meta, setMeta] = useState<{ fps: number; frames: number } | null>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
 
-  // src(genId) が変わったら実解像度をリセットし、読込済み/読込時に反映
+  // src(genId) や video 要素が変わったら実解像度をリセットし、読込済み/読込時に反映
   useEffect(() => {
-    if (!genId) {
+    if (!gen?.id || !videoEl) {
       setActualDim(null);
       return;
     }
-    const v = videoRef.current;
-    setActualDim(v?.videoWidth ? { w: v.videoWidth, h: v.videoHeight } : null);
-    if (!v) return;
+    const v = videoEl;
+    setActualDim(v.videoWidth ? { w: v.videoWidth, h: v.videoHeight } : null);
     const onLoaded = () => setActualDim({ w: v.videoWidth, h: v.videoHeight });
     v.addEventListener('loadedmetadata', onLoaded);
     return () => v.removeEventListener('loadedmetadata', onLoaded);
-  }, [genId, videoRef]);
+  }, [gen?.id, videoEl]);
 
-  // fps / 総フレーム数を ffprobe から取得（ローカルのみ）
+  // fps / 総フレーム数を data source から取得（server=ffprobe、browser-zip=Mediabunny）
   useEffect(() => {
     setMeta(null);
     setCurrentFrame(0);
-    if (!enabled || !genId) return;
+    if (!gen?.id) return;
     let cancelled = false;
-    fetch(`/meta/${genId}`)
-      .then((r) => (r.ok ? r.json() : null))
+    dataSource
+      .getVideoMeta(gen)
       .then((m) => {
         if (!cancelled && m?.fps) setMeta({ fps: m.fps, frames: m.frames });
       })
@@ -44,13 +45,14 @@ export function useVideoPlaybackMeta(
     return () => {
       cancelled = true;
     };
-  }, [genId, enabled]);
+  }, [gen, dataSource]);
 
   // 現在表示中フレーム番号を追跡（requestVideoFrameCallback 優先、無ければ timeupdate）
   useEffect(() => {
-    const video = videoRef.current;
+    const video = videoEl;
     if (!video || !meta?.fps) return;
     const toFrame = (t: number) => setCurrentFrame(Math.round(t * meta.fps));
+    toFrame(video.currentTime);
 
     if (typeof video.requestVideoFrameCallback === 'function') {
       let handle = 0;
@@ -69,7 +71,7 @@ export function useVideoPlaybackMeta(
       video.removeEventListener('timeupdate', onUpdate);
       video.removeEventListener('seeked', onUpdate);
     };
-  }, [meta, videoRef]);
+  }, [meta, videoEl]);
 
   return { actualDim, meta, currentFrame };
 }
@@ -81,28 +83,23 @@ export function VideoDetailsPanel({
   meta,
   actualDim,
   className,
+  dataSource,
+  videoRef,
 }: {
   gen: Generation;
   currentFrame: number;
   meta: { fps: number; frames: number } | null;
   actualDim: { w: number; h: number } | null;
   className?: string;
+  dataSource: ViewerDataSource;
+  videoRef?: RefObject<HTMLVideoElement | null>;
 }) {
   const [frameNo, setFrameNo] = useState('');
   const [copied, setCopied] = useState(false);
+  const [exportError, setExportError] = useState('');
   const copyTimer = useRef<number | undefined>(undefined);
   const prompt = gen.prompt?.trim() ?? '';
   const title = gen.title && gen.title !== 'New Video' ? gen.title : '';
-  const canExport = gen._local;
-
-  // サーバーが Content-Disposition を返すので <a> クリックでダウンロードされる。
-  // 動画(/video)はインライン配信なので download 属性でファイル名を指定して保存させる
-  const triggerDownload = (href: string, filename?: string) => {
-    const a = document.createElement('a');
-    a.href = href;
-    if (filename) a.download = filename;
-    a.click();
-  };
 
   const copyPrompt = async () => {
     if (!prompt) return;
@@ -121,6 +118,19 @@ export function VideoDetailsPanel({
   // 入力が空なら現在のフレーム、数値が入っていればその番号を保存対象にする
   const frameToSave =
     frameNo.trim() === '' ? currentFrame : Math.max(0, Math.floor(Number(frameNo) || 0));
+  const exportActions = dataSource.getExportActions(gen);
+  const frameAction =
+    dataSource.getFrameExportAction?.(gen, frameToSave, videoRef?.current) ?? null;
+  const canExport = exportActions.length > 0 || !!frameAction;
+
+  const runExportAction = async (run: () => Promise<void> | void) => {
+    setExportError('');
+    try {
+      await run();
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : '書き出しに失敗しました');
+    }
+  };
 
   return (
     <aside
@@ -161,53 +171,53 @@ export function VideoDetailsPanel({
           <div className="video-modal-section-label">Export</div>
 
           <div className="video-modal-export-row">
-            <button
-              type="button"
-              className="video-modal-btn"
-              onClick={() => triggerDownload(`/video/${gen.id}`, `${gen.id}.mp4`)}
-            >
-              <Download size={15} aria-hidden /> 動画 (MP4)
-            </button>
-            <button
-              type="button"
-              className="video-modal-btn"
-              onClick={() => triggerDownload(`/audio/${gen.id}?format=mp3`)}
-            >
-              <Download size={15} aria-hidden /> 音声 (MP3)
-            </button>
-            <button
-              type="button"
-              className="video-modal-btn"
-              onClick={() => triggerDownload(`/audio/${gen.id}?format=m4a`)}
-            >
-              <Download size={15} aria-hidden /> 音声 (M4A)
-            </button>
+            {exportActions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                className="video-modal-btn"
+                onClick={() => runExportAction(action.run)}
+              >
+                <Download size={15} aria-hidden /> {action.label}
+              </button>
+            ))}
           </div>
 
-          <div className="video-modal-frame-row">
-            <input
-              type="number"
-              min={0}
-              max={meta && meta.frames > 0 ? meta.frames - 1 : undefined}
-              step={1}
-              placeholder={meta ? `現在 ${currentFrame}` : 'フレーム番号'}
-              value={frameNo}
-              onChange={(e) => setFrameNo(e.target.value)}
-              className="video-modal-frame-input"
-            />
-            <button
-              type="button"
-              className="video-modal-btn"
-              onClick={() => triggerDownload(`/frame/${gen.id}?n=${frameToSave}`)}
-            >
-              <Download size={15} aria-hidden /> フレーム保存
-            </button>
-          </div>
-          {meta && (
+          {frameAction && (
+            <>
+              <div className="video-modal-frame-row">
+                <input
+                  type="number"
+                  min={0}
+                  max={meta && meta.frames > 0 ? meta.frames - 1 : undefined}
+                  step={1}
+                  placeholder={meta ? `現在 ${currentFrame}` : 'フレーム番号'}
+                  value={frameNo}
+                  onChange={(e) => setFrameNo(e.target.value)}
+                  className="video-modal-frame-input"
+                />
+                <button
+                  type="button"
+                  className="video-modal-btn"
+                  onClick={() => runExportAction(frameAction.run)}
+                >
+                  <Download size={15} aria-hidden /> {frameAction.label}
+                </button>
+              </div>
+              {meta && (
+                <div className="video-modal-frame-hint">
+                  全 {meta.frames} フレーム · {meta.fps.toFixed(0)}{' '}
+                  fps（空欄なら現在のフレームを保存）
+                </div>
+              )}
+            </>
+          )}
+          {dataSource.mode === 'browser-zip' && (
             <div className="video-modal-frame-hint">
-              全 {meta.frames} フレーム · {meta.fps.toFixed(0)} fps（空欄なら現在のフレームを保存）
+              フレーム保存は現在表示中の映像を PNG として保存します。MP3 変換は未対応です
             </div>
           )}
+          {exportError && <div className="video-modal-frame-hint">{exportError}</div>}
         </section>
       )}
 

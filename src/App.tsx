@@ -1,14 +1,27 @@
+import {
+  ChevronDown,
+  ChevronUp,
+  Clapperboard,
+  GalleryVerticalEnd,
+  LayoutGrid,
+  Play,
+  Settings,
+  Users,
+  X,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Switch } from 'react-aria-components';
+import { clampedHeightRatio, MasonryGrid } from './components/MasonryGrid';
 import { PlaylistPlayer } from './components/PlaylistPlayer';
 import { Setup } from './components/Setup';
+import { VerticalFeed } from './components/VerticalFeed';
 import { VideoCard } from './components/VideoCard';
+import { resolveViewerMode } from './dataSources/mode';
+import { createServerDataSource } from './dataSources/serverDataSource';
+import type { ViewerDataSource } from './dataSources/types';
+import { createZipDataSource } from './dataSources/zipDataSource';
 import type { Generation } from './types';
-
-// ── Prompt 内の @avatar を抽出 ───────────────────────────────────────────
-function extractAvatars(prompt: string): string[] {
-  return [...new Set((prompt.match(/@[\w_.]+/g) ?? []).map((m) => m.toLowerCase()))];
-}
+import { extractAvatars } from './utils/avatars';
 
 const S = {
   header: {
@@ -23,17 +36,50 @@ const S = {
     alignItems: 'center',
     flexWrap: 'wrap' as const,
   },
-  h1: { fontSize: 15, fontWeight: 700, color: '#fff', whiteSpace: 'nowrap' as const },
+  h1: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
+    fontSize: 15,
+    fontWeight: 700,
+    color: '#fff',
+    whiteSpace: 'nowrap' as const,
+  },
   search: {
     flex: 1,
     minWidth: 180,
-    background: '#222',
+    background: '#1d1d1d',
     border: '1px solid #333',
-    borderRadius: 8,
+    borderRadius: 999,
     color: '#ddd',
-    padding: '7px 13px',
-    fontSize: 14,
+    padding: '7px 15px',
+    fontSize: 13,
     outline: 'none',
+  },
+  viewSeg: {
+    display: 'inline-flex',
+    border: '1px solid #333',
+    borderRadius: 14,
+    overflow: 'hidden',
+    background: '#1d1d1d',
+  },
+  viewSegBtn: {
+    font: 'inherit',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    border: 0,
+    background: 'transparent',
+    color: '#777',
+    padding: '4px 11px',
+    fontSize: 11,
+    cursor: 'pointer',
+    transition: 'all .12s',
+    whiteSpace: 'nowrap' as const,
+  },
+  viewSegBtnActive: {
+    background: '#2a3650',
+    color: '#c9dcff',
   },
   count: {
     display: 'inline-flex',
@@ -49,12 +95,6 @@ const S = {
   },
   countStrong: { color: '#ddd', fontSize: 12, fontWeight: 700 },
   countDivider: { width: 1, height: 12, background: '#333' },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-    gap: 14,
-    padding: 18,
-  },
   empty: { textAlign: 'center' as const, padding: 80, color: '#444', fontSize: 16 },
   filterBar: {
     padding: '8px 18px',
@@ -136,6 +176,9 @@ const S = {
 
 const PAGE_SIZE = 60;
 const SOUND_STORAGE_KEY = 'sora-viewer:sound-enabled';
+const VIEW_STORAGE_KEY = 'sora-viewer:view-mode';
+
+type ViewMode = 'grid' | 'feed';
 
 function loadSoundEnabled() {
   try {
@@ -145,7 +188,21 @@ function loadSoundEnabled() {
   }
 }
 
+function loadViewMode(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === 'feed' ? 'feed' : 'grid';
+  } catch {
+    return 'grid';
+  }
+}
+
+function createDataSource(): ViewerDataSource {
+  const mode = resolveViewerMode();
+  return mode === 'browser-zip' ? createZipDataSource() : createServerDataSource();
+}
+
 export default function App() {
+  const dataSource = useMemo(() => createDataSource(), []);
   const [phase, setPhase] = useState<'loading' | 'setup' | 'app'>('loading');
   const [all, setAll] = useState<Generation[]>([]);
   const [query, setQuery] = useState('');
@@ -154,6 +211,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [previewSoundEnabled, setPreviewSoundEnabled] = useState(loadSoundEnabled);
+  const [view, setView] = useState<ViewMode>(loadViewMode);
   // 再生プレーヤーの起動状態。カードクリックも「フルスクリーン再生」も同じプレーヤーで開く。
   const [player, setPlayer] = useState<{
     startIndex: number;
@@ -165,14 +223,16 @@ export default function App() {
 
   const loadManifestData = useCallback(() => {
     setLoading(true);
-    fetch('/api/manifest')
-      .then((r) => r.json())
-      .then((data: Generation[]) => {
+    dataSource
+      .loadManifest()
+      .then((data) => {
         setAll(data);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [dataSource]);
+
+  useEffect(() => () => dataSource.dispose(), [dataSource]);
 
   useEffect(() => {
     try {
@@ -182,14 +242,22 @@ export default function App() {
     }
   }, [previewSoundEnabled]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, view);
+    } catch {
+      // Ignore storage failures; the toggle should still work for this session.
+    }
+  }, [view]);
+
   const handleSoundBlocked = useCallback(() => {
     setPreviewSoundEnabled(false);
   }, []);
 
   useEffect(() => {
     const forceSetup = new URLSearchParams(location.search).get('setup') === '1';
-    fetch('/api/config')
-      .then((r) => r.json())
+    dataSource
+      .getConfig()
       .then((cfg: { configured: boolean }) => {
         if (cfg.configured && !forceSetup) {
           setPhase('app');
@@ -199,7 +267,7 @@ export default function App() {
         }
       })
       .catch(() => setPhase('setup'));
-  }, [loadManifestData]);
+  }, [dataSource, loadManifestData]);
 
   const handleSetupDone = useCallback(() => {
     // ?setup=1 を URL から消してから本体へ
@@ -267,7 +335,10 @@ export default function App() {
   const hasMore = visibleCount < filtered.length;
 
   // 連続再生の対象（src を持つもの）。絞り込み結果をそのまま順序として使う。
-  const playable = useMemo(() => filtered.filter((g) => g._local || g.url), [filtered]);
+  const playable = useMemo(
+    () => filtered.filter((g) => dataSource.canPlay(g)),
+    [dataSource, filtered],
+  );
 
   // 「フルスクリーン再生」: 先頭から連続再生
   const startPlayback = () => {
@@ -281,18 +352,22 @@ export default function App() {
   };
 
   if (phase === 'loading') return <div style={S.empty}>Loading…</div>;
-  if (phase === 'setup') return <Setup onDone={handleSetupDone} />;
+  if (phase === 'setup') return <Setup dataSource={dataSource} onDone={handleSetupDone} />;
 
   return (
     <>
       <header style={S.header}>
-        <span style={S.h1}>🎬 Sora Viewer</span>
+        <span style={S.h1}>
+          <Clapperboard size={16} aria-hidden />
+          Sora Viewer
+        </span>
         <button
           style={{ ...S.chip, display: 'inline-flex', gap: 4 }}
           onClick={() => setPhase('setup')}
           title="データ設定"
+          aria-label="データ設定"
         >
-          ⚙
+          <Settings size={13} aria-hidden />
         </button>
         {avatarList.length > 0 && (
           <button
@@ -300,22 +375,50 @@ export default function App() {
               ...S.chip,
               ...(selectedAvatars.size > 0 || showAvatars ? S.chipActive : {}),
               display: 'inline-flex',
-              gap: 4,
+              gap: 5,
             }}
             onClick={() => setShowAvatars((v) => !v)}
           >
-            👤 Avatar{selectedAvatars.size > 0 && ` (${selectedAvatars.size})`}
-            <span style={{ fontSize: 9 }}>{showAvatars ? '▲' : '▼'}</span>
+            <Users size={12} aria-hidden />
+            Avatar{selectedAvatars.size > 0 && ` (${selectedAvatars.size})`}
+            {showAvatars ? (
+              <ChevronUp size={11} aria-hidden />
+            ) : (
+              <ChevronDown size={11} aria-hidden />
+            )}
           </button>
         )}
         {!loading && playable.length > 0 && (
-          <button
-            style={{ ...S.chip, display: 'inline-flex', gap: 4 }}
-            onClick={startPlayback}
-            title="絞り込み結果をフルスクリーンで連続再生（ランダムは再生画面で切替）"
-          >
-            ▶ フルスクリーン再生
-          </button>
+          <>
+            <span style={S.viewSeg}>
+              <button
+                style={{ ...S.viewSegBtn, ...(view === 'grid' ? S.viewSegBtnActive : {}) }}
+                onClick={() => setView('grid')}
+                title="グリッド表示"
+                aria-pressed={view === 'grid'}
+              >
+                <LayoutGrid size={13} aria-hidden />
+                グリッド
+              </button>
+              <button
+                style={{ ...S.viewSegBtn, ...(view === 'feed' ? S.viewSegBtnActive : {}) }}
+                onClick={() => setView('feed')}
+                title="縦フィード表示（スワイプ / ↑↓ で次の動画へ）"
+                aria-pressed={view === 'feed'}
+              >
+                <GalleryVerticalEnd size={13} aria-hidden />
+                フィード
+              </button>
+            </span>
+            <button
+              style={{ ...S.chip, display: 'inline-flex', gap: 5 }}
+              onClick={startPlayback}
+              title="絞り込み結果をフルスクリーンで連続再生（ランダムは再生画面で切替）"
+            >
+              <Play size={12} aria-hidden />
+              フルスクリーン再生
+            </button>
+          </>
         )}
         <input
           style={S.search}
@@ -383,13 +486,15 @@ export default function App() {
                 borderColor: '#633',
                 background: '#2a1a1a',
                 marginRight: 4,
+                gap: 4,
               }}
               onClick={() => {
                 setSelectedAvatars(new Set());
                 setVisibleCount(PAGE_SIZE);
               }}
             >
-              ✕ クリア
+              <X size={11} aria-hidden />
+              クリア
             </span>
           )}
           {avatarList.map((a) => (
@@ -417,20 +522,34 @@ export default function App() {
       ) : filtered.length === 0 ? (
         <div style={S.empty}>該当なし</div>
       ) : (
-        <div style={S.grid}>
-          {visible.map((g) => (
+        <MasonryGrid
+          items={visible}
+          keyOf={(g) => g.id}
+          heightRatio={(g) => clampedHeightRatio(g.width, g.height)}
+          renderItem={(g) => (
             <VideoCard
-              key={g.id}
               gen={g}
+              dataSource={dataSource}
               onSelect={openSingle}
               previewSoundEnabled={previewSoundEnabled}
               onSoundBlocked={handleSoundBlocked}
             />
-          ))}
-        </div>
+          )}
+        />
       )}
 
       {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
+
+      {view === 'feed' && !loading && playable.length > 0 && (
+        <VerticalFeed
+          playlist={playable}
+          startIndex={0}
+          soundEnabled={previewSoundEnabled}
+          dataSource={dataSource}
+          onSoundChange={setPreviewSoundEnabled}
+          onClose={() => setView('grid')}
+        />
+      )}
 
       {player && playable.length > 0 && (
         <PlaylistPlayer
@@ -440,6 +559,7 @@ export default function App() {
           initialRepeatOne={player.repeatOne}
           initialShowDetails={player.details}
           soundEnabled={previewSoundEnabled}
+          dataSource={dataSource}
           onSoundChange={setPreviewSoundEnabled}
           onClose={() => setPlayer(null)}
         />
