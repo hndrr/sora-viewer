@@ -13,3 +13,4 @@ json/*
 
 # macOS resource fork
 ._*
+.tmp-verify/

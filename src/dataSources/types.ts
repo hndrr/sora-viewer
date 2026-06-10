@@ -43,6 +43,11 @@ export interface ViewerDataSource {
   loadManifest: () => Promise<Generation[]>;
   canPlay: (gen: Generation) => boolean;
   getVideoSrc: (gen: Generation) => Promise<string | null>;
+  /**
+   * getVideoSrc が返した URL を使い終わったときに呼ぶ（browser-zip では Blob URL を解放）。
+   * 同じ generation の URL を他で再生中でないことは呼び出し側が保証する。再取得は getVideoSrc で可能。
+   */
+  releaseVideoSrc?: (gen: Generation) => void;
   getThumbnailSrc: (gen: Generation) => Promise<string | null>;
   getVideoMeta: (gen: Generation) => Promise<VideoMeta | null>;
   getExportActions: (gen: Generation) => ExportAction[];

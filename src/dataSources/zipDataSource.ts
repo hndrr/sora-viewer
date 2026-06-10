@@ -287,18 +287,30 @@ export function createZipDataSource(): ViewerDataSource {
       return url;
     },
 
+    releaseVideoSrc(gen) {
+      const url = videoUrls.get(gen.id);
+      if (!url) return;
+      videoUrls.delete(gen.id);
+      URL.revokeObjectURL(url);
+    },
+
     async getThumbnailSrc(gen) {
       if (gen.mediaKind !== 'browser-zip') return null;
       const cached = thumbnailUrls.get(gen.id);
       if (cached) return cached;
-      const videoSrc = await dataSource.getVideoSrc(gen);
-      if (!videoSrc) return null;
+      // サムネ生成は一時的な Blob URL で行い、終わったら即座に解放する。
+      // videoUrls キャッシュを経由すると、サムネを出しただけの動画の mp4 全体がメモリに残り続ける。
+      const blob = await blobFor(gen);
+      if (!blob) return null;
+      const tmpUrl = URL.createObjectURL(blob);
       try {
-        const thumb = await captureThumbnail(videoSrc);
+        const thumb = await captureThumbnail(tmpUrl);
         if (thumb) thumbnailUrls.set(gen.id, thumb);
         return thumb;
       } catch {
         return null;
+      } finally {
+        URL.revokeObjectURL(tmpUrl);
       }
     },
 
@@ -384,6 +396,15 @@ export function createZipDataSource(): ViewerDataSource {
       revokeAll();
     },
   };
+
+  if (import.meta.env.DEV) {
+    // Blob URL の解放確認用デバッグフック(dev ビルド限定)
+    (window as Window & { __zipBlobStats?: () => unknown }).__zipBlobStats = () => ({
+      videos: videoUrls.size,
+      videoIds: [...videoUrls.keys()],
+      thumbnails: thumbnailUrls.size,
+    });
+  }
 
   return dataSource;
 }
