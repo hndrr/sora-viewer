@@ -1,25 +1,33 @@
+import { Play } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ViewerDataSource } from '../dataSources/types';
 import type { Generation } from '../types';
 
 const S = {
   card: {
+    position: 'relative' as const,
+    height: '100%',
     background: '#181818',
-    borderRadius: 10,
+    borderRadius: 12,
     overflow: 'hidden',
     border: '1px solid #242424',
     transition: 'border-color .15s',
     cursor: 'pointer',
   },
-  cardHover: { borderColor: '#444' },
-  vwrap: { position: 'relative' as const, background: '#000', overflow: 'hidden' },
-  thumb: { width: '100%', height: '100%', objectFit: 'contain' as const, display: 'block' },
+  cardHover: { borderColor: '#4a4a4a' },
+  vwrap: {
+    position: 'relative' as const,
+    height: '100%',
+    background: '#000',
+    overflow: 'hidden',
+  },
+  thumb: { width: '100%', height: '100%', objectFit: 'cover' as const, display: 'block' },
   previewVideo: {
     position: 'absolute' as const,
     inset: 0,
     width: '100%',
     height: '100%',
-    objectFit: 'contain' as const,
+    objectFit: 'cover' as const,
     background: '#000',
     opacity: 0,
     transition: 'opacity .12s',
@@ -45,25 +53,46 @@ const S = {
     transition: 'opacity .15s',
     pointerEvents: 'none' as const,
   },
-  meta: { padding: '10px 13px 13px' },
-  row: { display: 'flex', justifyContent: 'space-between', marginBottom: 5 },
-  small: {
-    fontSize: 10,
-    color: '#555',
-    fontFamily: 'monospace',
+  // ホバー時のみ下部に重ねるキャプション（Sora Web 風）。
+  // カード高 = メディア高に保つため、メタ情報は常設ではなくオーバーレイで出す。
+  caption: {
+    position: 'absolute' as const,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: '38px 13px 12px',
+    background: 'linear-gradient(to top, rgba(0,0,0,.8) 0%, rgba(0,0,0,.45) 60%, transparent 100%)',
+    opacity: 0,
+    transition: 'opacity .18s',
+    pointerEvents: 'none' as const,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 4,
+  },
+  captionTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#fff',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
   },
-  prompt: { fontSize: 12, color: '#bbb', lineHeight: 1.6, whiteSpace: 'pre-wrap' as const },
+  captionPrompt: {
+    fontSize: 11.5,
+    color: 'rgba(255,255,255,.85)',
+    lineHeight: 1.55,
+    margin: 0,
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical' as const,
+    overflow: 'hidden',
+  },
+  captionMeta: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,.55)',
+    fontFamily: 'monospace',
+  },
 };
-
-function aspectRatio(w: number, h: number) {
-  const r = w / h;
-  if (r > 1.3) return '16/9';
-  if (r < 0.8) return '9/16';
-  return '1/1';
-}
 
 export function VideoCard({
   gen,
@@ -187,7 +216,7 @@ export function VideoCard({
         onSelect(gen);
       }}
     >
-      <div style={{ ...S.vwrap, aspectRatio: aspectRatio(gen.width, gen.height) }}>
+      <div style={S.vwrap}>
         {thumbSrc && !thumbError ? (
           <img
             src={thumbSrc}
@@ -207,7 +236,7 @@ export function VideoCard({
               fontSize: 12,
             }}
           >
-            {playable ? '▶' : 'なし'}
+            {playable ? <Play size={20} aria-hidden /> : 'なし'}
           </div>
         )}
 
@@ -240,46 +269,20 @@ export function VideoCard({
         </div>
         {gen.mediaKind === 'remote-url' && <span style={S.badge}>URL</span>}
         {gen.mediaKind === 'missing' && <span style={S.badge}>NO MP4</span>}
-      </div>
 
-      <div style={S.meta}>
-        {title && (
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: '#e0e0e0',
-              marginBottom: 4,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap' as const,
-            }}
-          >
-            {title}
-          </div>
-        )}
-        <div style={S.row}>
-          <span style={{ ...S.small, maxWidth: '60%' }}>{gen._source}</span>
-          <span style={S.small}>
+        <div style={{ ...S.caption, opacity: hovered ? 1 : 0 }}>
+          {title && <div style={S.captionTitle}>{title}</div>}
+          {prompt ? (
+            <p style={S.captionPrompt}>{prompt}</p>
+          ) : (
+            <p style={{ ...S.captionPrompt, color: 'rgba(255,255,255,.4)', fontStyle: 'italic' }}>
+              (プロンプトなし)
+            </p>
+          )}
+          <span style={S.captionMeta}>
             {gen.width}×{gen.height}
           </span>
         </div>
-        {prompt ? (
-          <p
-            style={{
-              ...S.prompt,
-              display: '-webkit-box',
-              WebkitLineClamp: 3,
-              WebkitBoxOrient: 'vertical' as const,
-              overflow: 'hidden',
-            }}
-          >
-            {prompt}
-          </p>
-        ) : (
-          <p style={{ ...S.prompt, color: '#444', fontStyle: 'italic' }}>(プロンプトなし)</p>
-        )}
-        <div style={{ ...S.small, marginTop: 4 }}>{gen.id}</div>
       </div>
     </div>
   );

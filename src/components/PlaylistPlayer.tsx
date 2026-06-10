@@ -126,6 +126,8 @@ export function PlaylistPlayer({
       });
     return () => {
       cancelled = true;
+      // 次の動画へ移る・プレーヤーを閉じるタイミングで前の Blob URL を解放（zip モードのメモリ対策）
+      dataSource.releaseVideoSrc?.(current);
     };
   }, [current, dataSource]);
 
