@@ -116,6 +116,7 @@ export function VideoCard({
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverActiveRef = useRef(false);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const previewHeldRef = useRef(false);
 
   const prompt = gen.prompt?.trim() ?? '';
   const title = gen.title && gen.title !== 'New Video' ? gen.title : '';
@@ -128,6 +129,12 @@ export function VideoCard({
     }
     setPreviewActive(false);
     setPreviewReady(false);
+    if (previewHeldRef.current) {
+      // ホバーで生成した Blob URL を解放しないと、カードを次々ホバーするだけで mp4 が溜まる
+      dataSource.releaseVideoSrc?.(gen);
+      previewHeldRef.current = false;
+      setPreviewSrc(null);
+    }
     if (hoverTimerRef.current) {
       clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = null;
@@ -154,8 +161,12 @@ export function VideoCard({
   useEffect(() => {
     return () => {
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+      if (previewHeldRef.current) {
+        dataSource.releaseVideoSrc?.(gen);
+        previewHeldRef.current = false;
+      }
     };
-  }, []);
+  }, [dataSource, gen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -200,6 +211,7 @@ export function VideoCard({
             .getVideoSrc(gen)
             .then((src) => {
               if (!src || !hoverActiveRef.current) return;
+              previewHeldRef.current = true;
               setPreviewSrc(src);
               setPreviewActive(true);
             })
