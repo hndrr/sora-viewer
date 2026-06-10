@@ -287,7 +287,9 @@ body {
 
 .video-modal-export-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* ボタン数に応じて行幅いっぱいに等分する（2個なら 1/2 ずつ） */
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
   gap: 8px;
 }
 
