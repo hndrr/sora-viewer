@@ -6,12 +6,14 @@ type JsonRecord = Record<string, unknown>;
 
 const CROCKFORD = '0123456789abcdefghjkmnpqrstvwxyz';
 
+const ULID_PATTERN = /^[0-9a-hjkmnp-tv-z]{26}$/i;
+
 function idToTimestamp(id: string): number {
   const raw = id.startsWith('gen_') ? id.slice(4) : id;
-  if (raw.startsWith('01k') || raw.startsWith('01j') || raw.startsWith('01m')) {
+  if (ULID_PATTERN.test(raw)) {
     let ts = 0;
-    for (let i = 0; i < Math.min(10, raw.length); i++) {
-      const n = CROCKFORD.indexOf(raw[i]?.toLowerCase() ?? '');
+    for (let i = 0; i < 10; i++) {
+      const n = CROCKFORD.indexOf(raw[i].toLowerCase());
       if (n < 0) return 0;
       ts = ts * 32 + n;
     }
@@ -55,8 +57,13 @@ function normalizeGeneration(raw: JsonRecord, source: string, hasMp4: boolean): 
 }
 
 async function loadJsonArray(entry: ZipEntry): Promise<JsonRecord[]> {
-  const parsed = await entry.json();
-  return Array.isArray(parsed) ? (parsed as JsonRecord[]) : [];
+  try {
+    const parsed = await entry.json();
+    return Array.isArray(parsed) ? (parsed as JsonRecord[]) : [];
+  } catch {
+    // 壊れた JSON が1つあっても他のファイルの読み込みは続行する
+    return [];
+  }
 }
 
 function triggerDownload(href: string, filename?: string) {
@@ -99,51 +106,60 @@ async function captureThumbnail(videoSrc: string): Promise<string | null> {
   video.playsInline = true;
   video.preload = 'metadata';
 
-  await new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error('Thumbnail metadata timeout')), 8000);
-    video.onloadedmetadata = () => {
-      window.clearTimeout(timeout);
-      resolve();
-    };
-    video.onerror = () => {
-      window.clearTimeout(timeout);
-      reject(new Error('Failed to load video metadata'));
-    };
-  });
-
-  const target =
-    Number.isFinite(video.duration) && video.duration > 0 ? Math.min(0.5, video.duration / 2) : 0;
-  if (target > 0) {
+  try {
     await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => reject(new Error('Thumbnail seek timeout')), 8000);
-      video.onseeked = () => {
+      const timeout = window.setTimeout(
+        () => reject(new Error('Thumbnail metadata timeout')),
+        8000,
+      );
+      video.onloadedmetadata = () => {
         window.clearTimeout(timeout);
         resolve();
       };
       video.onerror = () => {
         window.clearTimeout(timeout);
-        reject(new Error('Failed to seek video'));
+        reject(new Error('Failed to load video metadata'));
       };
-      video.currentTime = target;
     });
+
+    const target =
+      Number.isFinite(video.duration) && video.duration > 0 ? Math.min(0.5, video.duration / 2) : 0;
+    if (target > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error('Thumbnail seek timeout')), 8000);
+        video.onseeked = () => {
+          window.clearTimeout(timeout);
+          resolve();
+        };
+        video.onerror = () => {
+          window.clearTimeout(timeout);
+          reject(new Error('Failed to seek video'));
+        };
+        video.currentTime = target;
+      });
+    }
+
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    if (!width || !height) return null;
+
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(480 / width, 1);
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.78),
+    );
+    return blob ? URL.createObjectURL(blob) : null;
+  } finally {
+    // タイムアウト・失敗時もバックグラウンドのバッファリングを確実に止める
+    video.src = '';
+    video.load();
   }
-
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  if (!width || !height) return null;
-
-  const canvas = document.createElement('canvas');
-  const scale = Math.min(480 / width, 1);
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, 'image/jpeg', 0.78),
-  );
-  return blob ? URL.createObjectURL(blob) : null;
 }
 
 async function exportAudioM4a(sourceBlob: Blob, filename: string) {
@@ -365,7 +381,8 @@ export function createZipDataSource(): ViewerDataSource {
           label: '動画 (MP4)',
           run: async () => {
             const src = await dataSource.getVideoSrc(gen);
-            if (src) triggerDownload(src, `${gen.id}.mp4`);
+            if (!src) throw new Error('動画ファイルが見つかりません');
+            triggerDownload(src, `${gen.id}.mp4`);
           },
         },
         {
