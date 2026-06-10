@@ -4,9 +4,10 @@ import type { ViewerDataSource } from '../dataSources/types';
 import type { Generation } from '../types';
 
 // 動画の再生メタ情報（実解像度・fps/総フレーム・現在フレーム）を追跡する共通フック。
-// VideoModal / PlaylistPlayer の両方で使う。
+// PlaylistPlayer / VerticalFeed の両方で使う。
+// videoEl は ref ではなく要素そのものを受け取る（要素の差し替え時にリスナーを張り直すため）。
 export function useVideoPlaybackMeta(
-  videoRef: RefObject<HTMLVideoElement | null>,
+  videoEl: HTMLVideoElement | null,
   gen: Generation | null,
   dataSource: ViewerDataSource,
 ) {
@@ -16,19 +17,18 @@ export function useVideoPlaybackMeta(
   const [meta, setMeta] = useState<{ fps: number; frames: number } | null>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
 
-  // src(genId) が変わったら実解像度をリセットし、読込済み/読込時に反映
+  // src(genId) や video 要素が変わったら実解像度をリセットし、読込済み/読込時に反映
   useEffect(() => {
-    if (!gen?.id) {
+    if (!gen?.id || !videoEl) {
       setActualDim(null);
       return;
     }
-    const v = videoRef.current;
-    setActualDim(v?.videoWidth ? { w: v.videoWidth, h: v.videoHeight } : null);
-    if (!v) return;
+    const v = videoEl;
+    setActualDim(v.videoWidth ? { w: v.videoWidth, h: v.videoHeight } : null);
     const onLoaded = () => setActualDim({ w: v.videoWidth, h: v.videoHeight });
     v.addEventListener('loadedmetadata', onLoaded);
     return () => v.removeEventListener('loadedmetadata', onLoaded);
-  }, [gen?.id, videoRef]);
+  }, [gen?.id, videoEl]);
 
   // fps / 総フレーム数を data source から取得（server=ffprobe、browser-zip=Mediabunny）
   useEffect(() => {
@@ -49,9 +49,10 @@ export function useVideoPlaybackMeta(
 
   // 現在表示中フレーム番号を追跡（requestVideoFrameCallback 優先、無ければ timeupdate）
   useEffect(() => {
-    const video = videoRef.current;
+    const video = videoEl;
     if (!video || !meta?.fps) return;
     const toFrame = (t: number) => setCurrentFrame(Math.round(t * meta.fps));
+    toFrame(video.currentTime);
 
     if (typeof video.requestVideoFrameCallback === 'function') {
       let handle = 0;
@@ -70,7 +71,7 @@ export function useVideoPlaybackMeta(
       video.removeEventListener('timeupdate', onUpdate);
       video.removeEventListener('seeked', onUpdate);
     };
-  }, [meta, videoRef]);
+  }, [meta, videoEl]);
 
   return { actualDim, meta, currentFrame };
 }

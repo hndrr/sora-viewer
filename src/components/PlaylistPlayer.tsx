@@ -75,6 +75,13 @@ export function PlaylistPlayer({
   onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // <video> は src 切替時にアンマウント/再マウントされるため、ref に加えて
+  // state でも要素を持ち、useVideoPlaybackMeta がリスナーを張り直せるようにする
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const setVideoNode = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    setVideoEl(el);
+  }, []);
   const playerRef = useRef<HTMLDivElement>(null);
   const total = playlist.length;
 
@@ -104,7 +111,7 @@ export function PlaylistPlayer({
   const [src, setSrc] = useState('');
   const title = current && current.title && current.title !== 'New Video' ? current.title : '';
   const { actualDim, meta, currentFrame } = useVideoPlaybackMeta(
-    videoRef,
+    videoEl,
     current ?? null,
     dataSource,
   );
@@ -374,7 +381,7 @@ export function PlaylistPlayer({
       <div className="playlist-stage">
         {src ? (
           <video
-            ref={videoRef}
+            ref={setVideoNode}
             className="playlist-player-video"
             src={src}
             autoPlay

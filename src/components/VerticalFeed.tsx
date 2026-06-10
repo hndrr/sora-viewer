@@ -258,9 +258,13 @@ export function VerticalFeed({
   );
   const [showDetails, setShowDetails] = useState(false);
 
+  // ref に加えて state でも要素を持ち、アクティブ動画の差し替え時に
+  // useVideoPlaybackMeta がリスナーを張り直せるようにする
+  const [activeVideoEl, setActiveVideoEl] = useState<HTMLVideoElement | null>(null);
+
   const current = playlist[activeIndex] ?? null;
   const { actualDim, meta, currentFrame } = useVideoPlaybackMeta(
-    activeVideoRef,
+    activeVideoEl,
     current,
     dataSource,
   );
@@ -272,6 +276,7 @@ export function VerticalFeed({
 
   const onActiveVideo = useCallback((video: HTMLVideoElement | null) => {
     activeVideoRef.current = video;
+    setActiveVideoEl(video);
   }, []);
 
   // 初期表示位置（カードクリックで開いた動画）までジャンプ
