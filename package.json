@@ -9,8 +9,10 @@
   "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "concurrently -n server,vite -c cyan,magenta \"tsx watch server/cli.ts\" \"vite\"",
+    "dev:cloudflare": "cross-env VITE_SORA_VIEWER_MODE=browser-zip vite",
     "server": "tsx server/cli.ts",
     "build": "vite build && node scripts/build-electron.mjs",
+    "build:web": "cross-env VITE_SORA_VIEWER_MODE=browser-zip vite build",
     "build:electron": "node scripts/build-electron.mjs",
     "serve": "npm run build && node dist-electron/server.cjs",
     "dev:electron": "node scripts/build-electron.mjs && concurrently -k -n vite,electron -c magenta,cyan \"vite\" \"cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron dist-electron/main.cjs\"",
@@ -28,9 +30,11 @@
     "@hono/node-server": "^1.13.7",
     "hono": "^4.7.11",
     "lucide-react": "^1.17.0",
+    "mediabunny": "^1.46.0",
     "react": "^19.2.7",
     "react-aria-components": "^1.18.0",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "unzipit": "^2.0.3"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",

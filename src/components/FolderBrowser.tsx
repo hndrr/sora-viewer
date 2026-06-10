@@ -14,6 +14,7 @@ interface BrowseData {
 interface Props {
   title: string;
   initialPath?: string | null;
+  browseDir: (path?: string | null) => Promise<BrowseData>;
   onSelect: (dir: string) => void;
   onClose: () => void;
 }
@@ -110,21 +111,19 @@ const S = {
   },
 };
 
-export function FolderBrowser({ title, initialPath, onSelect, onClose }: Props) {
+export function FolderBrowser({ title, initialPath, browseDir, onSelect, onClose }: Props) {
   const [data, setData] = useState<BrowseData | null>(null);
   const [error, setError] = useState('');
 
-  const load = useCallback((p?: string | null) => {
-    setError('');
-    const q = p ? `?path=${encodeURIComponent(p)}` : '';
-    fetch(`/api/browse${q}`)
-      .then((r) => r.json())
-      .then((d: BrowseData & { error?: string }) => {
-        if (d.error) setError(d.error);
-        else setData(d);
-      })
-      .catch((e) => setError(String(e)));
-  }, []);
+  const load = useCallback(
+    (p?: string | null) => {
+      setError('');
+      browseDir(p)
+        .then(setData)
+        .catch((e) => setError(String(e)));
+    },
+    [browseDir],
+  );
 
   useEffect(() => {
     load(initialPath ?? undefined);

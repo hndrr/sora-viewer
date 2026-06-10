@@ -21,6 +21,13 @@ The UI should not directly construct paths such as `/video/:id` or `/thumbnail/:
 
 Cloudflare Pages should serve the built Vite static app from `dist/`. The Cloudflare web version should not depend on server APIs such as `/api`, `/video`, `/thumbnail`, `/meta`, `/audio`, or `/frame`.
 
+Use these scripts for Cloudflare web mode:
+
+- `npm run dev:cloudflare`
+- `npm run build:web`
+
+Viewer mode is selected by `VITE_SORA_VIEWER_MODE=browser-zip`. During development, `?mode=server` or `?mode=browser-zip` can override the mode explicitly.
+
 The setup flow should allow the user to select a Sora2 ZIP archive, for example:
 
 - `sora-data-files-export-4.zip`
@@ -53,7 +60,14 @@ Mediabunny usage:
 
 - Use Mediabunny for browser-side media metadata where it is useful, such as duration, dimensions, rotation, tracks, or other information that can improve the details panel.
 - Treat Mediabunny-powered metadata as optional. Playback must still work if metadata extraction fails.
-- Keep future audio extraction as a possible Mediabunny-backed enhancement.
+- Use Mediabunny Conversion for audio-only M4A export in browser ZIP mode when an audio track is available.
+- Keep MP3 conversion out of v1 because it requires heavier browser-side encoding.
+
+Cloudflare browser ZIP export support:
+
+- Video MP4 download from the selected ZIP entry.
+- Audio M4A extraction via Mediabunny.
+- Current visible video frame PNG export via `HTMLVideoElement` and canvas.
 
 Do not include `ffmpeg.wasm` in v1. It remains a future option for heavier browser-side conversion and extraction, but it adds significant bundle/runtime cost and may require cross-origin isolation headers for multithreaded use.
 
