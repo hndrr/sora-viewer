@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Sora2 export archive files such as `sora-data-files-export-4.zip` should be playable from a web deployment on Cloudflare Pages.
+Sora2 export archive files such as `sora-data-files-export-4.zip` should be playable from a web deployment on Cloudflare Workers Static Assets.
 
 The Cloudflare version reads the user's archive directly in the browser. It must not require uploading the user's JSON or MP4 files to Cloudflare.
 
@@ -19,7 +19,7 @@ The UI should not directly construct paths such as `/video/:id` or `/thumbnail/:
 
 ## Cloudflare Web Version
 
-Cloudflare Pages should serve the built Vite static app from `dist/`. The Cloudflare web version should not depend on server APIs such as `/api`, `/video`, `/thumbnail`, `/meta`, `/audio`, or `/frame`.
+Cloudflare Workers Static Assets should serve the built Vite static app from `dist/`. The Cloudflare web version should not depend on server APIs such as `/api`, `/video`, `/thumbnail`, `/meta`, `/audio`, or `/frame`.
 
 Use these scripts for Cloudflare web mode:
 
@@ -133,7 +133,7 @@ Cloudflare web version:
 - Keep search, avatar filter, card click playback, and fullscreen playlist playback working.
 - Handle missing MP4 files without crashing.
 - Continue playback even if Mediabunny metadata extraction fails.
-- Verify the built `dist/` app works from Cloudflare Pages/static hosting without a Node server.
+- Verify the built `dist/` app works from Cloudflare static hosting without a Node server.
 
 Electron/Node local version:
 
