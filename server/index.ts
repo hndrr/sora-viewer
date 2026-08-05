@@ -6,6 +6,7 @@ import path from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { createMiddleware } from 'hono/factory';
 import { resolveBinary } from './ffmpegPath.js';
 
 // Web モード(npm run dev / serve)は常にプロジェクトルートから起動されるため cwd を基準にする。
@@ -73,6 +74,13 @@ function writeConfigFile(p: string, data: SavedConfig) {
     console.error('Failed to save config:', e);
     throw e;
   }
+}
+
+function isLoopbackAddress(addr?: string | null): boolean {
+  if (!addr) return false;
+  // IPv4-mapped IPv6（::ffff:127.0.0.1）も素の IPv4 として判定する
+  const a = addr.startsWith('::ffff:') ? addr.slice('::ffff:'.length) : addr;
+  return a === '::1' || a === '127.0.0.1' || a.startsWith('127.');
 }
 
 function allowLocalCorsOrigin(origin: string): string | null {
@@ -475,6 +483,17 @@ function createApp(cfg: AppConfig) {
   const app = new Hono();
   app.use('*', cors({ origin: allowLocalCorsOrigin }));
 
+  // 参照フォルダの変更・列挙は端末内からだけ許可する。CORS はブラウザ経由の保護でしか
+  // ないため、127.0.0.1 以外にバインドされた場合に備えて接続元アドレスで直接弾く。
+  // （既定の 127.0.0.1 バインドでは接続元も常にループバックなので挙動は変わらない）
+  const requireLocalClient = createMiddleware(async (c, next) => {
+    const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
+    if (!isLoopbackAddress(env?.incoming?.socket?.remoteAddress)) {
+      return c.json({ error: 'この操作はこの端末からのみ実行できます' }, 403);
+    }
+    await next();
+  });
+
   function configStatus() {
     return {
       jsonDir: state.jsonDir ?? null,
@@ -489,10 +508,21 @@ function createApp(cfg: AppConfig) {
   // ── 設定 API ────────────────────────────────────────────────────────────
   app.get('/api/config', (c) => c.json(configStatus()));
 
-  app.post('/api/config', async (c) => {
-    const body = await c.req
-      .json()
-      .catch(() => ({}) as { jsonDir?: string | null; movDir?: string });
+  app.post('/api/config', requireLocalClient, async (c) => {
+    // JSON リテラルの null・配列・数値も c.req.json() は通してしまうので、先に型を確かめる
+    const raw: unknown = await c.req.json().catch(() => ({}));
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      return c.json({ error: 'JSON オブジェクトを送信してください' }, 400);
+    }
+    const body = raw as { jsonDir?: unknown; movDir?: unknown };
+    const isPathValue = (v: unknown) => v === undefined || v === null || typeof v === 'string';
+    if (!isPathValue(body.jsonDir) || !isPathValue(body.movDir)) {
+      return c.json({ error: 'フォルダのパスは文字列で指定してください' }, 400);
+    }
+    // null は「未指定にする」の意味なので、以降は空文字として扱う
+    const jsonDirInput = body.jsonDir === undefined ? undefined : ((body.jsonDir as string) ?? '');
+    const movDirInput = body.movDir === undefined ? undefined : ((body.movDir as string) ?? '');
+
     // 途中で失敗しても現在の状態を壊さないよう、候補に変更を当ててから
     // 「全検証 → マニフェスト構築 → 設定保存」が通ったときだけ state を差し替える。
     const next: DataDirs = {
@@ -501,22 +531,22 @@ function createApp(cfg: AppConfig) {
       movDir: state.movDir,
     };
 
-    if (body.jsonDir !== undefined) {
+    if (jsonDirInput !== undefined) {
       // 空文字 / null は「JSON を使わない」の意味。次回起動時に json/ を拾い直さないよう記録する
-      if (!body.jsonDir) {
+      if (!jsonDirInput) {
         next.jsonDir = undefined;
         next.jsonDisabled = true;
-      } else if (!dirExists(body.jsonDir)) {
-        return c.json({ error: `JSON フォルダが存在しません: ${body.jsonDir}` }, 400);
+      } else if (!dirExists(jsonDirInput)) {
+        return c.json({ error: `JSON フォルダが存在しません: ${jsonDirInput}` }, 400);
       } else {
-        next.jsonDir = path.resolve(body.jsonDir);
+        next.jsonDir = path.resolve(jsonDirInput);
         next.jsonDisabled = false;
       }
     }
-    if (body.movDir !== undefined) {
-      if (!dirExists(body.movDir))
-        return c.json({ error: `mov フォルダが存在しません: ${body.movDir}` }, 400);
-      next.movDir = path.resolve(body.movDir);
+    if (movDirInput !== undefined) {
+      if (!dirExists(movDirInput))
+        return c.json({ error: `mov フォルダが存在しません: ${movDirInput}` }, 400);
+      next.movDir = path.resolve(movDirInput);
     }
 
     let built: Manifest;
@@ -539,7 +569,7 @@ function createApp(cfg: AppConfig) {
   });
 
   // ── サーバー側フォルダブラウザ ────────────────────────────────────────────
-  app.get('/api/browse', (c) => {
+  app.get('/api/browse', requireLocalClient, (c) => {
     try {
       return c.json(browseDir(c.req.query('path')));
     } catch (e) {
@@ -703,6 +733,12 @@ function createApp(cfg: AppConfig) {
 // ── 起動 ─────────────────────────────────────────────────────────────────────
 export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const hostname = opts.hostname ?? '127.0.0.1';
+  if (!isLoopbackAddress(hostname) && hostname !== 'localhost') {
+    console.warn(
+      `⚠ ${hostname} で待ち受けます。動画とマニフェストは端末外からも読めます。` +
+        'フォルダの変更・列挙はこの端末からのみ許可されます。',
+    );
+  }
   const thumbDir = path.resolve(opts.thumbDir ?? path.join(ROOT_DIR, '.thumbs'));
   const configPath = path.resolve(
     opts.configPath ?? process.env.SORA_CONFIG ?? path.join(ROOT_DIR, '.sora-viewer.json'),
