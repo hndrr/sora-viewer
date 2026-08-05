@@ -64,12 +64,14 @@ function readConfigFile(p: string): SavedConfig {
   }
 }
 
+// 保存に失敗したら呼び出し元へ投げる（API が成功を返してしまわないように）
 function writeConfigFile(p: string, data: SavedConfig) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(data, null, 2));
   } catch (e) {
     console.error('Failed to save config:', e);
+    throw e;
   }
 }
 
@@ -389,28 +391,32 @@ function mimeFor(filePath: string): string {
 }
 
 // ── 可変状態 ─────────────────────────────────────────────────────────────────
-interface State {
+/** 参照先フォルダの選択。検証中はこのコピーを組み立て、成功したときだけ state に反映する */
+interface DataDirs {
   /** 未設定なら mov フォルダだけのマニフェストになる */
   jsonDir?: string;
   /** 設定画面で「クリア」された状態。true の間は起動時の JSON フォルダ自動検出も行わない */
   jsonDisabled?: boolean;
   movDir?: string;
+}
+
+interface Manifest {
   /** ID → 動画の実ファイル。マニフェスト構築時に作り直す */
   movIndex: Map<string, MovFile>;
   manifest: Record<string, unknown>[];
 }
 
-// mov フォルダを読み直してマニフェストを組み立て直す。
+interface State extends DataDirs, Manifest {}
+
+// mov フォルダを読み直してマニフェストを組み立てる（state は書き換えない）。
 // JSON フォルダが無ければ動画ファイルだけの一覧になる（= mov だけで起動できる）。
-function refreshManifest(state: State) {
-  state.movIndex = buildMovIndex(state.movDir);
-  if (!dirExists(state.movDir)) {
-    state.manifest = [];
-    return;
-  }
-  state.manifest = dirExists(state.jsonDir)
-    ? loadManifest(state.jsonDir!, state.movDir!, state.movIndex)
-    : loadMovOnlyManifest(state.movIndex, state.movDir!);
+function buildManifest(dirs: DataDirs): Manifest {
+  const movIndex = buildMovIndex(dirs.movDir);
+  if (!dirExists(dirs.movDir)) return { movIndex, manifest: [] };
+  const manifest = dirExists(dirs.jsonDir)
+    ? loadManifest(dirs.jsonDir!, dirs.movDir!, movIndex)
+    : loadMovOnlyManifest(movIndex, dirs.movDir!);
+  return { movIndex, manifest };
 }
 
 // ID から動画の実パスを引く。索引に無い ID は {id}.mp4 / {id}.mov として解決する
@@ -487,33 +493,48 @@ function createApp(cfg: AppConfig) {
     const body = await c.req
       .json()
       .catch(() => ({}) as { jsonDir?: string | null; movDir?: string });
+    // 途中で失敗しても現在の状態を壊さないよう、候補に変更を当ててから
+    // 「全検証 → マニフェスト構築 → 設定保存」が通ったときだけ state を差し替える。
+    const next: DataDirs = {
+      jsonDir: state.jsonDir,
+      jsonDisabled: state.jsonDisabled,
+      movDir: state.movDir,
+    };
+
     if (body.jsonDir !== undefined) {
       // 空文字 / null は「JSON を使わない」の意味。次回起動時に json/ を拾い直さないよう記録する
       if (!body.jsonDir) {
-        state.jsonDir = undefined;
-        state.jsonDisabled = true;
+        next.jsonDir = undefined;
+        next.jsonDisabled = true;
       } else if (!dirExists(body.jsonDir)) {
         return c.json({ error: `JSON フォルダが存在しません: ${body.jsonDir}` }, 400);
       } else {
-        state.jsonDir = path.resolve(body.jsonDir);
-        state.jsonDisabled = false;
+        next.jsonDir = path.resolve(body.jsonDir);
+        next.jsonDisabled = false;
       }
     }
     if (body.movDir !== undefined) {
       if (!dirExists(body.movDir))
         return c.json({ error: `mov フォルダが存在しません: ${body.movDir}` }, 400);
-      state.movDir = path.resolve(body.movDir);
+      next.movDir = path.resolve(body.movDir);
     }
+
+    let built: Manifest;
     try {
-      refreshManifest(state);
+      built = buildManifest(next);
     } catch (e) {
       return c.json({ error: `読み込みに失敗しました: ${String(e)}` }, 500);
     }
-    writeConfigFile(configPath, {
-      jsonDir: state.jsonDir,
-      movDir: state.movDir,
-      jsonDisabled: state.jsonDisabled || undefined,
-    });
+    try {
+      writeConfigFile(configPath, {
+        jsonDir: next.jsonDir,
+        movDir: next.movDir,
+        jsonDisabled: next.jsonDisabled || undefined,
+      });
+    } catch (e) {
+      return c.json({ error: `設定の保存に失敗しました: ${String(e)}` }, 500);
+    }
+    Object.assign(state, next, built);
     return c.json(configStatus());
   });
 
@@ -725,7 +746,7 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   // mov フォルダだけあれば起動できる（JSON はプロンプト等のメタ情報用で任意）
   const configured = dirExists(movDir);
   const state: State = { jsonDir, jsonDisabled, movDir, movIndex: new Map(), manifest: [] };
-  if (configured) refreshManifest(state);
+  if (configured) Object.assign(state, buildManifest(state));
   else console.log('ℹ データ未設定。設定画面で mov フォルダを指定してください（JSON は任意）。');
 
   const app = createApp({
