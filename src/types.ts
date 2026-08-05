@@ -10,6 +10,8 @@ export interface Generation {
   url: string;
   _source: string;
   _local: boolean;
+  /** ローカル動画の拡張子（'.mp4' / '.mov'）。server モードでのみ付く */
+  _ext?: string;
   mediaKind?: MediaKind;
 }
 
