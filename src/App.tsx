@@ -220,6 +220,11 @@ export default function App() {
     details: boolean;
   } | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  // 実測の縦横比（サムネイル/プレビュー動画から取得）。JSON なしモードでは manifest に
+  // width/height が無いため、これが唯一の縦横判定材料になる。
+  const [measuredRatios, setMeasuredRatios] = useState<Map<string, number>>(() => new Map());
+  const pendingRatiosRef = useRef<Map<string, number>>(new Map());
+  const ratioFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadManifestData = useCallback(() => {
     setLoading(true);
@@ -253,6 +258,54 @@ export default function App() {
   const handleSoundBlocked = useCallback(() => {
     setPreviewSoundEnabled(false);
   }, []);
+
+  // カードから実寸が届くたびに再レンダーすると重いので、少しまとめてから反映する
+  const handleMeasure = useCallback((id: string, w: number, h: number) => {
+    if (!w || !h) return;
+    pendingRatiosRef.current.set(id, clampedHeightRatio(w, h));
+    if (ratioFlushRef.current) return;
+    ratioFlushRef.current = setTimeout(() => {
+      ratioFlushRef.current = null;
+      const pending = pendingRatiosRef.current;
+      pendingRatiosRef.current = new Map();
+      setMeasuredRatios((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const [key, ratio] of pending) {
+          if (next.get(key) !== ratio) {
+            next.set(key, ratio);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 120);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (ratioFlushRef.current) clearTimeout(ratioFlushRef.current);
+    },
+    [],
+  );
+
+  // 未計測カードの暫定比。計測済みの中央値を使うことで、縦動画ばかりのフォルダなら
+  // 読み込み前から縦枠で並ぶ（16:9 固定だと全部横長になってしまう）。
+  const typicalRatio = useMemo(() => {
+    if (measuredRatios.size === 0) return null;
+    const values = [...measuredRatios.values()].sort((a, b) => a - b);
+    return values[Math.floor(values.length / 2)];
+  }, [measuredRatios]);
+
+  const heightRatioFor = useCallback(
+    (g: Generation) => {
+      const measured = measuredRatios.get(g.id);
+      if (measured) return measured;
+      if (g.width > 0 && g.height > 0) return clampedHeightRatio(g.width, g.height);
+      return typicalRatio ?? clampedHeightRatio(0, 0);
+    },
+    [measuredRatios, typicalRatio],
+  );
 
   useEffect(() => {
     const forceSetup = new URLSearchParams(location.search).get('setup') === '1';
@@ -311,7 +364,8 @@ export default function App() {
     }
     if (query) {
       const q = query.toLowerCase();
-      result = result.filter((g) => (g.prompt ?? '').toLowerCase().includes(q));
+      // JSON なし(mov のみ)ではプロンプトが無いので、タイトル(=ファイル名)も検索対象にする
+      result = result.filter((g) => `${g.prompt ?? ''} ${g.title ?? ''}`.toLowerCase().includes(q));
     }
     return result;
   }, [all, query, selectedAvatars]);
@@ -423,7 +477,7 @@ export default function App() {
         <input
           style={S.search}
           type="text"
-          placeholder="プロンプトで検索…"
+          placeholder="プロンプト・タイトルで検索…"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -525,7 +579,7 @@ export default function App() {
         <MasonryGrid
           items={visible}
           keyOf={(g) => g.id}
-          heightRatio={(g) => clampedHeightRatio(g.width, g.height)}
+          heightRatio={heightRatioFor}
           renderItem={(g) => (
             <VideoCard
               gen={g}
@@ -533,6 +587,7 @@ export default function App() {
               onSelect={openSingle}
               previewSoundEnabled={previewSoundEnabled}
               onSoundBlocked={handleSoundBlocked}
+              onMeasure={handleMeasure}
             />
           )}
         />

@@ -100,12 +100,15 @@ export function VideoCard({
   onSelect,
   previewSoundEnabled,
   onSoundBlocked,
+  onMeasure,
 }: {
   gen: Generation;
   dataSource: ViewerDataSource;
   onSelect: (g: Generation) => void;
   previewSoundEnabled: boolean;
   onSoundBlocked: () => void;
+  /** サムネイル/プレビューから判明した実寸を親に返す（グリッドの縦横比に使う） */
+  onMeasure?: (id: string, width: number, height: number) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const [previewActive, setPreviewActive] = useState(false);
@@ -235,6 +238,9 @@ export function VideoCard({
             alt=""
             style={S.thumb}
             loading="lazy"
+            onLoad={(e) =>
+              onMeasure?.(gen.id, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+            }
             onError={() => setThumbError(true)}
           />
         ) : (
@@ -262,6 +268,10 @@ export function VideoCard({
             muted={!previewSoundEnabled}
             playsInline
             preload="metadata"
+            onLoadedMetadata={(e) =>
+              // ffmpeg 不在などでサムネイルが出ない場合は、ここが唯一の実寸ソースになる
+              onMeasure?.(gen.id, e.currentTarget.videoWidth, e.currentTarget.videoHeight)
+            }
             onCanPlay={(e) => startPreviewPlayback(e.currentTarget)}
           />
         )}
@@ -291,9 +301,11 @@ export function VideoCard({
               (プロンプトなし)
             </p>
           )}
-          <span style={S.captionMeta}>
-            {gen.width}×{gen.height}
-          </span>
+          {gen.width > 0 && gen.height > 0 && (
+            <span style={S.captionMeta}>
+              {gen.width}×{gen.height}
+            </span>
+          )}
         </div>
       </div>
     </div>

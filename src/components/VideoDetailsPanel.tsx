@@ -162,7 +162,11 @@ export function VideoDetailsPanel({
       <div className="video-modal-resolution">
         <span className="video-modal-resolution-label">Resolution</span>
         <span className="video-modal-resolution-value">
-          {actualDim ? `${actualDim.w} × ${actualDim.h}` : `${gen.width} × ${gen.height}`}
+          {actualDim
+            ? `${actualDim.w} × ${actualDim.h}`
+            : gen.width > 0 && gen.height > 0
+              ? `${gen.width} × ${gen.height}`
+              : '—'}
         </span>
       </div>
 
@@ -223,7 +227,7 @@ export function VideoDetailsPanel({
 
       <div className="video-modal-meta">
         <span>ID: {gen.id}</span>
-        <span>Task: {gen.task_id}</span>
+        {gen.task_id && <span>Task: {gen.task_id}</span>}
         <span>{gen._source}</span>
       </div>
     </aside>
