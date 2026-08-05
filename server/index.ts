@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { createMiddleware } from 'hono/factory';
 import { resolveBinary } from './ffmpegPath.js';
 
 // Web モード(npm run dev / serve)は常にプロジェクトルートから起動されるため cwd を基準にする。
@@ -15,6 +17,7 @@ const ROOT_DIR = process.cwd();
 export interface ServerOptions {
   port?: number;
   hostname?: string;
+  /** 省略可。指定しない場合は mov フォルダの動画ファイルだけでマニフェストを組み立てる */
   jsonDir?: string;
   movDir?: string;
   thumbDir?: string;
@@ -46,7 +49,14 @@ function dirExists(p?: string): boolean {
   }
 }
 
-function readConfigFile(p: string): { jsonDir?: string; movDir?: string } {
+/** 保存される設定。jsonDisabled は「JSON を明示的に使わない」選択の記録 */
+interface SavedConfig {
+  jsonDir?: string;
+  movDir?: string;
+  jsonDisabled?: boolean;
+}
+
+function readConfigFile(p: string): SavedConfig {
   try {
     const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -55,13 +65,22 @@ function readConfigFile(p: string): { jsonDir?: string; movDir?: string } {
   }
 }
 
-function writeConfigFile(p: string, data: { jsonDir?: string; movDir?: string }) {
+// 保存に失敗したら呼び出し元へ投げる（API が成功を返してしまわないように）
+function writeConfigFile(p: string, data: SavedConfig) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(data, null, 2));
   } catch (e) {
     console.error('Failed to save config:', e);
+    throw e;
   }
+}
+
+function isLoopbackAddress(addr?: string | null): boolean {
+  if (!addr) return false;
+  // IPv4-mapped IPv6（::ffff:127.0.0.1）も素の IPv4 として判定する
+  const a = addr.startsWith('::ffff:') ? addr.slice('::ffff:'.length) : addr;
+  return a === '::1' || a === '127.0.0.1' || a.startsWith('127.');
 }
 
 function allowLocalCorsOrigin(origin: string): string | null {
@@ -98,17 +117,73 @@ function countJson(dir?: string): number {
   return n;
 }
 
-function countMov(dir?: string): number {
-  if (!dirExists(dir)) return 0;
+// 対象にする動画拡張子。並び順は ID 決定の優先順でもある（a.mp4 と a.mov が
+// 両方ある場合、先に並ぶ .mp4 が拡張子なしの素の ID を取る）。
+const VIDEO_EXTS = ['.mp4', '.mov'];
+
+function videoExtOf(file: string): string | null {
+  const ext = path.extname(file).toLowerCase();
+  return VIDEO_EXTS.includes(ext) ? ext : null;
+}
+
+function listMovFiles(dir?: string): string[] {
+  if (!dirExists(dir)) return [];
   try {
-    return fs.readdirSync(dir!).filter((f) => f.endsWith('.mp4') && !f.startsWith('._')).length;
+    return fs
+      .readdirSync(dir!)
+      .filter((f) => !f.startsWith('._') && videoExtOf(f))
+      .sort(
+        (a, b) =>
+          VIDEO_EXTS.indexOf(videoExtOf(a)!) - VIDEO_EXTS.indexOf(videoExtOf(b)!) ||
+          a.localeCompare(b),
+      );
   } catch {
-    return 0;
+    return [];
   }
+}
+
+function countMov(dir?: string): number {
+  return listMovFiles(dir).length;
 }
 
 function isSafeMediaId(id: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(id);
+}
+
+/** mov フォルダの 1 ファイル。id は URL に載せる安全な識別子。 */
+interface MovFile {
+  id: string;
+  /** 拡張子を除いたファイル名（JSON なしモードではこれがタイトルになる） */
+  name: string;
+  path: string;
+  mtimeMs: number;
+}
+
+function hashedMovId(seed: string): string {
+  return `mov_${createHash('sha1').update(seed).digest('hex').slice(0, 16)}`;
+}
+
+function buildMovIndex(dir?: string): Map<string, MovFile> {
+  const index = new Map<string, MovFile>();
+  if (!dirExists(dir)) return index;
+  for (const file of listMovFiles(dir)) {
+    const name = file.slice(0, file.length - path.extname(file).length);
+    const full = path.join(dir!, file);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(full).mtimeMs;
+    } catch {
+      // 読めないファイルでも一覧からは落とさない（再生時に 404 になる）
+    }
+    // Sora の書き出し（{generation_id}.mp4）はファイル名がそのまま ID になる。
+    // 手元でリネームしたファイル（日本語・空白入りなど）は安定したハッシュ ID に
+    // 置き換え、URL 経路には常に isSafeMediaId を満たす ID だけを流す。
+    let id = isSafeMediaId(name) ? name : hashedMovId(name);
+    // a.mp4 と a.mov のように拡張子違いで同名なら、後から来た方は拡張子込みで ID を作る
+    if (index.has(id)) id = hashedMovId(file);
+    if (!index.has(id)) index.set(id, { id, name, path: full, mtimeMs });
+  }
+  return index;
 }
 
 // サーバー側フォルダブラウザ用: ディレクトリの一覧を返す
@@ -136,13 +211,37 @@ function browseDir(p?: string) {
 }
 
 // ── マニフェスト読み込み ─────────────────────────────────────────────────────
-function loadManifest(jsonDir: string, movDir: string) {
-  const mp4Set = new Set(
-    fs
-      .readdirSync(movDir)
-      .filter((f) => f.endsWith('.mp4') && !f.startsWith('._'))
-      .map((f) => f.replace('.mp4', '')),
-  );
+// JSON なし（mov フォルダだけ）で起動した場合のマニフェスト。
+// prompt / 解像度は JSON にしか無いので空にし、ファイル名をタイトルとして扱う。
+function loadMovOnlyManifest(movIndex: Map<string, MovFile>, movDir: string) {
+  const entries = [...movIndex.values()]
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
+    .map((f) => ({
+      id: f.id,
+      task_id: '',
+      width: 0,
+      height: 0,
+      title: f.name,
+      prompt: '',
+      url: '',
+      _source: '(mov)',
+      _local: true,
+      _ext: path.extname(f.path).toLowerCase(),
+    }));
+
+  console.log(`✓ ${entries.length} entries  (mov only / JSON なし)`);
+  console.log(`  MOV_DIR:  ${movDir}`);
+  return entries;
+}
+
+function loadManifest(jsonDir: string, movDir: string, movIndex: Map<string, MovFile>) {
+  // JSON のエントリに、対応するローカル動画の有無と拡張子（.mp4 / .mov）を紐づける
+  function attachLocalFile(e: Record<string, unknown>, source: string) {
+    const file = movIndex.get(e.id as string);
+    e._source = source;
+    e._local = !!file;
+    if (file) e._ext = path.extname(file.path).toLowerCase();
+  }
 
   const entries: Record<string, unknown>[] = [];
 
@@ -153,19 +252,13 @@ function loadManifest(jsonDir: string, movDir: string) {
 
       if (stat.isFile() && name.endsWith('-generations.json') && !name.startsWith('._')) {
         const raw = JSON.parse(fs.readFileSync(fullPath, 'utf-8')) as Record<string, unknown>[];
-        for (const e of raw) {
-          e._source = name;
-          e._local = mp4Set.has(e.id as string);
-        }
+        for (const e of raw) attachLocalFile(e, name);
         entries.push(...raw);
       } else if (stat.isDirectory()) {
         const genFile = path.join(fullPath, 'generations.json');
         if (fs.existsSync(genFile)) {
           const raw = JSON.parse(fs.readFileSync(genFile, 'utf-8')) as Record<string, unknown>[];
-          for (const e of raw) {
-            e._source = `${name}/generations.json`;
-            e._local = mp4Set.has(e.id as string);
-          }
+          for (const e of raw) attachLocalFile(e, `${name}/generations.json`);
           entries.push(...raw);
         }
       }
@@ -199,7 +292,7 @@ function loadManifest(jsonDir: string, movDir: string) {
   unique.sort((a, b) => idToTimestamp(b.id as string) - idToTimestamp(a.id as string));
 
   console.log(
-    `✓ ${unique.length} entries  (${unique.filter((e) => e._local).length} with local mp4, ${entries.length - unique.length} duplicates removed)`,
+    `✓ ${unique.length} entries  (${unique.filter((e) => e._local).length} with local video, ${entries.length - unique.length} duplicates removed)`,
   );
   console.log(`  JSON_DIR: ${jsonDir}`);
   console.log(`  MOV_DIR:  ${movDir}`);
@@ -306,10 +399,77 @@ function mimeFor(filePath: string): string {
 }
 
 // ── 可変状態 ─────────────────────────────────────────────────────────────────
-interface State {
+/** 参照先フォルダの選択。検証中はこのコピーを組み立て、成功したときだけ state に反映する */
+interface DataDirs {
+  /** 未設定なら mov フォルダだけのマニフェストになる */
   jsonDir?: string;
+  /** 設定画面で「クリア」された状態。true の間は起動時の JSON フォルダ自動検出も行わない */
+  jsonDisabled?: boolean;
   movDir?: string;
+}
+
+interface Manifest {
+  /** ID → 動画の実ファイル。マニフェスト構築時に作り直す */
+  movIndex: Map<string, MovFile>;
   manifest: Record<string, unknown>[];
+}
+
+interface State extends DataDirs, Manifest {}
+
+// mov フォルダを読み直してマニフェストを組み立てる（state は書き換えない）。
+// JSON フォルダが無ければ動画ファイルだけの一覧になる（= mov だけで起動できる）。
+function buildManifest(dirs: DataDirs): Manifest {
+  const movIndex = buildMovIndex(dirs.movDir);
+  if (!dirExists(dirs.movDir)) return { movIndex, manifest: [] };
+  const manifest = dirExists(dirs.jsonDir)
+    ? loadManifest(dirs.jsonDir!, dirs.movDir!, movIndex)
+    : loadMovOnlyManifest(movIndex, dirs.movDir!);
+  return { movIndex, manifest };
+}
+
+// ID から動画の実パスを引く。索引に無い ID は {id}.mp4 / {id}.mov として解決する
+// （マニフェスト取得後に mov フォルダへ追加されたファイルも再起動なしで再生できる）。
+function videoPathFor(state: State, id: string): string | null {
+  const indexed = state.movIndex.get(id);
+  if (indexed) return fs.existsSync(indexed.path) ? indexed.path : null;
+  if (!state.movDir) return null;
+  for (const ext of VIDEO_EXTS) {
+    for (const candidate of [ext, ext.toUpperCase()]) {
+      const p = path.join(state.movDir, `${id}${candidate}`);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+// 実ファイルの同一性を表す短い署名。参照フォルダを切り替えて同じ ID に別の動画が
+// 来た場合に、ブラウザ側/サーバー側どちらの古いキャッシュも使われないようにする。
+function mediaSignature(filePath: string): string | null {
+  try {
+    const st = fs.statSync(filePath);
+    return createHash('sha1')
+      .update(`${filePath}:${st.mtimeMs}:${st.size}`)
+      .digest('hex')
+      .slice(0, 16);
+  } catch {
+    return null;
+  }
+}
+
+// 同じ ID の古い署名のサムネイルを片付ける（署名付きにしたことで溜まらないように）
+function removeStaleThumbs(dir: string, id: string, keepName: string) {
+  const stale = new RegExp(`^${id}(-[0-9a-f]{16})?\\.jpg$`);
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name !== keepName && stale.test(name)) fs.rmSync(path.join(dir, name), { force: true });
+    }
+  } catch {
+    // 掃除に失敗しても本処理は続行する
+  }
+}
+
+function videoMimeFor(filePath: string): string {
+  return path.extname(filePath).toLowerCase() === '.mov' ? 'video/quicktime' : 'video/mp4';
 }
 
 interface AppConfig {
@@ -349,47 +509,107 @@ function createApp(cfg: AppConfig) {
   const app = new Hono();
   app.use('*', cors({ origin: allowLocalCorsOrigin }));
 
+  // /api/* の応答は設定内容や接続元で変わるので、どこにも保存させない
+  app.use('/api/*', async (c, next) => {
+    await next();
+    c.res.headers.set('Cache-Control', 'no-store');
+  });
+
+  // 参照フォルダの変更・列挙は端末内からだけ許可する。CORS はブラウザ経由の保護でしか
+  // ないため、127.0.0.1 以外にバインドされた場合に備えて接続元アドレスで直接弾く。
+  // （既定の 127.0.0.1 バインドでは接続元も常にループバックなので挙動は変わらない）
+  function isLocalClient(c: Context): boolean {
+    const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
+    return isLoopbackAddress(env?.incoming?.socket?.remoteAddress);
+  }
+
+  const requireLocalClient = createMiddleware(async (c, next) => {
+    if (!isLocalClient(c)) {
+      return c.json({ error: 'この操作はこの端末からのみ実行できます' }, 403);
+    }
+    await next();
+  });
+
   function configStatus() {
     return {
       jsonDir: state.jsonDir ?? null,
       movDir: state.movDir ?? null,
       jsonCount: countJson(state.jsonDir),
       movCount: countMov(state.movDir),
-      configured: dirExists(state.jsonDir) && dirExists(state.movDir),
+      // JSON は任意。mov フォルダさえ決まっていれば起動できる。
+      configured: dirExists(state.movDir),
     };
   }
 
   // ── 設定 API ────────────────────────────────────────────────────────────
-  app.get('/api/config', (c) => c.json(configStatus()));
+  // 端末外からの参照には絶対パスを含めない（閲覧に必要な件数・configured だけ返す）
+  app.get('/api/config', (c) => {
+    const status = configStatus();
+    return c.json(isLocalClient(c) ? status : { ...status, jsonDir: null, movDir: null });
+  });
 
-  app.post('/api/config', async (c) => {
-    const body = await c.req.json().catch(() => ({}) as { jsonDir?: string; movDir?: string });
-    if (body.jsonDir !== undefined) {
-      if (!dirExists(body.jsonDir))
-        return c.json({ error: `JSON フォルダが存在しません: ${body.jsonDir}` }, 400);
-      state.jsonDir = path.resolve(body.jsonDir);
+  app.post('/api/config', requireLocalClient, async (c) => {
+    // JSON リテラルの null・配列・数値も c.req.json() は通してしまうので、先に型を確かめる
+    const raw: unknown = await c.req.json().catch(() => ({}));
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      return c.json({ error: 'JSON オブジェクトを送信してください' }, 400);
     }
-    if (body.movDir !== undefined) {
-      if (!dirExists(body.movDir))
-        return c.json({ error: `mov フォルダが存在しません: ${body.movDir}` }, 400);
-      state.movDir = path.resolve(body.movDir);
+    const body = raw as { jsonDir?: unknown; movDir?: unknown };
+    const isPathValue = (v: unknown) => v === undefined || v === null || typeof v === 'string';
+    if (!isPathValue(body.jsonDir) || !isPathValue(body.movDir)) {
+      return c.json({ error: 'フォルダのパスは文字列で指定してください' }, 400);
     }
-    if (dirExists(state.jsonDir) && dirExists(state.movDir)) {
-      try {
-        state.manifest = loadManifest(state.jsonDir!, state.movDir!);
-      } catch (e) {
-        return c.json({ error: `読み込みに失敗しました: ${String(e)}` }, 500);
+    // null は「未指定にする」の意味なので、以降は空文字として扱う
+    const jsonDirInput = body.jsonDir === undefined ? undefined : ((body.jsonDir as string) ?? '');
+    const movDirInput = body.movDir === undefined ? undefined : ((body.movDir as string) ?? '');
+
+    // 途中で失敗しても現在の状態を壊さないよう、候補に変更を当ててから
+    // 「全検証 → マニフェスト構築 → 設定保存」が通ったときだけ state を差し替える。
+    const next: DataDirs = {
+      jsonDir: state.jsonDir,
+      jsonDisabled: state.jsonDisabled,
+      movDir: state.movDir,
+    };
+
+    if (jsonDirInput !== undefined) {
+      // 空文字 / null は「JSON を使わない」の意味。次回起動時に json/ を拾い直さないよう記録する
+      if (!jsonDirInput) {
+        next.jsonDir = undefined;
+        next.jsonDisabled = true;
+      } else if (!dirExists(jsonDirInput)) {
+        return c.json({ error: `JSON フォルダが存在しません: ${jsonDirInput}` }, 400);
+      } else {
+        next.jsonDir = path.resolve(jsonDirInput);
+        next.jsonDisabled = false;
       }
     }
-    writeConfigFile(configPath, {
-      jsonDir: state.jsonDir,
-      movDir: state.movDir,
-    });
+    if (movDirInput !== undefined) {
+      if (!dirExists(movDirInput))
+        return c.json({ error: `mov フォルダが存在しません: ${movDirInput}` }, 400);
+      next.movDir = path.resolve(movDirInput);
+    }
+
+    let built: Manifest;
+    try {
+      built = buildManifest(next);
+    } catch (e) {
+      return c.json({ error: `読み込みに失敗しました: ${String(e)}` }, 500);
+    }
+    try {
+      writeConfigFile(configPath, {
+        jsonDir: next.jsonDir,
+        movDir: next.movDir,
+        jsonDisabled: next.jsonDisabled || undefined,
+      });
+    } catch (e) {
+      return c.json({ error: `設定の保存に失敗しました: ${String(e)}` }, 500);
+    }
+    Object.assign(state, next, built);
     return c.json(configStatus());
   });
 
   // ── サーバー側フォルダブラウザ ────────────────────────────────────────────
-  app.get('/api/browse', (c) => {
+  app.get('/api/browse', requireLocalClient, (c) => {
     try {
       return c.json(browseDir(c.req.query('path')));
     } catch (e) {
@@ -402,10 +622,20 @@ function createApp(cfg: AppConfig) {
   app.get('/thumbnail/:id', async (c) => {
     const id = c.req.param('id');
     if (!isSafeMediaId(id)) return c.text('Invalid ID', 400);
-    if (!state.movDir) return c.notFound();
-    const thumbPath = path.join(thumbDir, `${id}.jpg`);
-    const videoPath = path.join(state.movDir, `${id}.mp4`);
-    if (!fs.existsSync(videoPath)) return c.notFound();
+    const videoPath = videoPathFor(state, id);
+    if (!videoPath) return c.notFound();
+    const sig = mediaSignature(videoPath);
+    if (!sig) return c.notFound();
+
+    // URL は ID 固定なので、中身が変わったかは ETag（署名）で判定させる
+    const etag = `"${sig}"`;
+    const cacheHeaders = { ETag: etag, 'Cache-Control': 'no-cache' };
+    if (c.req.header('if-none-match') === etag) {
+      return new Response(null, { status: 304, headers: cacheHeaders });
+    }
+
+    const thumbName = `${id}-${sig}.jpg`;
+    const thumbPath = path.join(thumbDir, thumbName);
     if (!fs.existsSync(thumbPath)) {
       try {
         await generateThumbnail(ffmpeg, videoPath, thumbPath);
@@ -413,22 +643,19 @@ function createApp(cfg: AppConfig) {
         console.error(`Thumbnail generation failed for ${id}:`, e);
         return c.text('Thumbnail generation failed', 500);
       }
+      removeStaleThumbs(thumbDir, id, thumbName);
     }
     const data = fs.readFileSync(thumbPath);
     return new Response(data, {
-      headers: {
-        'Content-Type': 'image/jpeg',
-        'Cache-Control': 'public, max-age=86400',
-      },
+      headers: { 'Content-Type': 'image/jpeg', ...cacheHeaders },
     });
   });
 
   app.get('/audio/:id', async (c) => {
     const id = c.req.param('id');
     if (!isSafeMediaId(id)) return c.text('Invalid ID', 400);
-    if (!state.movDir) return c.notFound();
-    const videoPath = path.join(state.movDir, `${id}.mp4`);
-    if (!fs.existsSync(videoPath)) return c.notFound();
+    const videoPath = videoPathFor(state, id);
+    if (!videoPath) return c.notFound();
     const format = c.req.query('format') === 'm4a' ? 'm4a' : 'mp3';
     const outPath = path.join(os.tmpdir(), `sora-${id}-${Date.now()}.${format}`);
     const codecArgs = format === 'mp3' ? ['-q:a', '2'] : ['-c:a', 'copy'];
@@ -452,9 +679,8 @@ function createApp(cfg: AppConfig) {
   app.get('/meta/:id', async (c) => {
     const id = c.req.param('id');
     if (!isSafeMediaId(id)) return c.text('Invalid ID', 400);
-    if (!state.movDir) return c.notFound();
-    const videoPath = path.join(state.movDir, `${id}.mp4`);
-    if (!fs.existsSync(videoPath)) return c.notFound();
+    const videoPath = videoPathFor(state, id);
+    if (!videoPath) return c.notFound();
     try {
       return c.json(await probeVideo(ffprobe, videoPath));
     } catch (e) {
@@ -466,9 +692,8 @@ function createApp(cfg: AppConfig) {
   app.get('/frame/:id', async (c) => {
     const id = c.req.param('id');
     if (!isSafeMediaId(id)) return c.text('Invalid ID', 400);
-    if (!state.movDir) return c.notFound();
-    const videoPath = path.join(state.movDir, `${id}.mp4`);
-    if (!fs.existsSync(videoPath)) return c.notFound();
+    const videoPath = videoPathFor(state, id);
+    if (!videoPath) return c.notFound();
     const n = parseInt(c.req.query('n') ?? '', 10);
     if (!Number.isInteger(n) || n < 0) return c.text('Invalid frame number', 400);
     const outPath = path.join(os.tmpdir(), `sora-${id}-frame${n}-${Date.now()}.png`);
@@ -502,11 +727,19 @@ function createApp(cfg: AppConfig) {
   app.get('/video/:id', async (c) => {
     const id = c.req.param('id');
     if (!isSafeMediaId(id)) return c.text('Invalid ID', 400);
-    if (!state.movDir) return c.notFound();
-    const fp = path.join(state.movDir, `${id}.mp4`);
-    if (!fs.existsSync(fp)) return c.notFound();
+    const fp = videoPathFor(state, id);
+    if (!fp) return c.notFound();
+    const mime = videoMimeFor(fp);
     const size = fs.statSync(fp).size;
+    // ID は同じでも参照フォルダを変えれば別の動画になりうるので、必ず再検証させる
+    const sig = mediaSignature(fp);
+    const validators: Record<string, string> = sig
+      ? { ETag: `"${sig}"`, 'Cache-Control': 'no-cache' }
+      : { 'Cache-Control': 'no-store' };
     const range = c.req.header('range');
+    if (!range && sig && c.req.header('if-none-match') === `"${sig}"`) {
+      return new Response(null, { status: 304, headers: validators });
+    }
     if (range) {
       const parsedRange = parseVideoRange(range, size);
       if (!parsedRange) return c.text('Range Not Satisfiable', 416);
@@ -516,19 +749,21 @@ function createApp(cfg: AppConfig) {
       return new Response(stream as unknown as ReadableStream, {
         status: 206,
         headers: {
-          'Content-Type': 'video/mp4',
+          'Content-Type': mime,
           'Content-Range': `bytes ${start}-${end}/${size}`,
           'Content-Length': String(chunk),
           'Accept-Ranges': 'bytes',
+          ...validators,
         },
       });
     }
     const stream = fs.createReadStream(fp);
     return new Response(stream as unknown as ReadableStream, {
       headers: {
-        'Content-Type': 'video/mp4',
+        'Content-Type': mime,
         'Content-Length': String(size),
         'Accept-Ranges': 'bytes',
+        ...validators,
       },
     });
   });
@@ -557,6 +792,12 @@ function createApp(cfg: AppConfig) {
 // ── 起動 ─────────────────────────────────────────────────────────────────────
 export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const hostname = opts.hostname ?? '127.0.0.1';
+  if (!isLoopbackAddress(hostname) && hostname !== 'localhost') {
+    console.warn(
+      `⚠ ${hostname} で待ち受けます。動画とマニフェストは端末外からも読めます。` +
+        'フォルダの変更・列挙はこの端末からのみ許可されます。',
+    );
+  }
   const thumbDir = path.resolve(opts.thumbDir ?? path.join(ROOT_DIR, '.thumbs'));
   const configPath = path.resolve(
     opts.configPath ?? process.env.SORA_CONFIG ?? path.join(ROOT_DIR, '.sora-viewer.json'),
@@ -570,12 +811,16 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
     for (const c of cands) if (dirExists(c)) return path.resolve(c!);
     return undefined;
   };
-  const jsonDir = firstExisting(
-    saved.jsonDir,
-    opts.jsonDir,
-    process.env.SORA_JSON_DIR,
-    path.join(ROOT_DIR, 'json'),
-  );
+  // 設定画面で JSON を外していたら自動検出もしない（外したのに json/ が復活しないように）
+  const jsonDisabled = saved.jsonDisabled === true;
+  const jsonDir = jsonDisabled
+    ? undefined
+    : firstExisting(
+        saved.jsonDir,
+        opts.jsonDir,
+        process.env.SORA_JSON_DIR,
+        path.join(ROOT_DIR, 'json'),
+      );
   const movDir = firstExisting(
     saved.movDir,
     opts.movDir,
@@ -593,13 +838,11 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
 
   if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
 
-  const configured = dirExists(jsonDir) && dirExists(movDir);
-  const state: State = {
-    jsonDir,
-    movDir,
-    manifest: configured ? loadManifest(jsonDir!, movDir!) : [],
-  };
-  if (!configured) console.log('ℹ データ未設定。設定画面で json/mov フォルダを指定してください。');
+  // mov フォルダだけあれば起動できる（JSON はプロンプト等のメタ情報用で任意）
+  const configured = dirExists(movDir);
+  const state: State = { jsonDir, jsonDisabled, movDir, movIndex: new Map(), manifest: [] };
+  if (configured) Object.assign(state, buildManifest(state));
+  else console.log('ℹ データ未設定。設定画面で mov フォルダを指定してください（JSON は任意）。');
 
   const app = createApp({
     state,

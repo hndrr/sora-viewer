@@ -343,7 +343,8 @@ export function Setup({ dataSource, onDone }: Props) {
     void loadZip(zip);
   }
 
-  const ready = !!cfg && cfg.jsonCount > 0 && cfg.movCount > 0;
+  // JSON は任意。動画ファイルが見つかっていれば起動できる（JSON があればプロンプト等が付く）。
+  const ready = !!cfg && cfg.movCount > 0;
 
   const renderPath = (dir: string | null) =>
     dir ? (
@@ -520,33 +521,18 @@ export function Setup({ dataSource, onDone }: Props) {
           データ設定
         </h1>
         <p style={S.lead}>
-          閲覧するデータの場所を指定してください。
+          閲覧するデータの場所を指定してください。必須なのは <strong>mov フォルダ</strong>{' '}
+          だけです。
           <br />
           JSON と動画(mov)は別々の場所にあっても構いません。指定したフォルダ
           <strong>そのものの中身</strong>を読み込みます。
         </p>
 
         <div style={S.card}>
-          <h2 style={S.h2}>JSON フォルダ</h2>
-          <p style={S.desc}>
-            Sora エクスポートの JSON があるフォルダ。フォルダ直下に{' '}
-            <code style={S.code}>*-generations.json</code>、 または{' '}
-            <code style={S.code}>sora-data-files-export-1/</code> のようなサブフォルダ（中に{' '}
-            <code style={S.code}>generations.json</code>）がある場所を選びます。
-          </p>
-          <div style={S.row}>
-            {renderPath(cfg?.jsonDir ?? null)}
-            <button style={S.btn} onClick={() => pick('json')}>
-              フォルダを選択…
-            </button>
-          </div>
-          {renderStat(cfg?.jsonDir ?? null, cfg?.jsonCount ?? 0, 'JSON')}
-        </div>
-
-        <div style={S.card}>
-          <h2 style={S.h2}>mov フォルダ</h2>
+          <h2 style={S.h2}>mov フォルダ（必須）</h2>
           <p style={S.desc}>
             動画ファイル <code style={S.code}>{'{generation_id}.mp4'}</code> が入っているフォルダ。
+            <code style={S.code}>.mov</code> ファイルも読み込めます。
           </p>
           <div style={S.row}>
             {renderPath(cfg?.movDir ?? null)}
@@ -554,7 +540,33 @@ export function Setup({ dataSource, onDone }: Props) {
               フォルダを選択…
             </button>
           </div>
-          {renderStat(cfg?.movDir ?? null, cfg?.movCount ?? 0, 'mp4')}
+          {renderStat(cfg?.movDir ?? null, cfg?.movCount ?? 0, 'mp4/mov')}
+        </div>
+
+        <div style={S.card}>
+          <h2 style={S.h2}>JSON フォルダ（任意）</h2>
+          <p style={S.desc}>
+            Sora エクスポートの JSON があるフォルダ。フォルダ直下に{' '}
+            <code style={S.code}>*-generations.json</code>、 または{' '}
+            <code style={S.code}>sora-data-files-export-1/</code> のようなサブフォルダ（中に{' '}
+            <code style={S.code}>generations.json</code>）がある場所を選びます。
+            <br />
+            未指定でも mov フォルダの動画ファイル
+            だけで起動できます（その場合プロンプト・アバター絞り込みは使えず、
+            ファイル名がタイトルになります）。
+          </p>
+          <div style={S.row}>
+            {renderPath(cfg?.jsonDir ?? null)}
+            <button style={S.btn} onClick={() => pick('json')}>
+              フォルダを選択…
+            </button>
+            {cfg?.jsonDir && (
+              <button style={S.btn} onClick={() => applyDir('json', '')} title="JSON を使わない">
+                クリア
+              </button>
+            )}
+          </div>
+          {renderStat(cfg?.jsonDir ?? null, cfg?.jsonCount ?? 0, 'JSON')}
         </div>
 
         <div style={S.footer}>
@@ -565,6 +577,9 @@ export function Setup({ dataSource, onDone }: Props) {
           >
             起動
           </button>
+          {ready && (cfg?.jsonCount ?? 0) === 0 && (
+            <span style={{ fontSize: 12, color: '#888' }}>JSON なし（mov のみ）で起動します</span>
+          )}
           {error && <span style={S.err}>{error}</span>}
         </div>
       </div>

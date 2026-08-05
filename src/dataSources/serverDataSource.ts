@@ -78,11 +78,12 @@ export function createServerDataSource(): ViewerDataSource {
 
     getExportActions(gen): ExportAction[] {
       if (gen.mediaKind !== 'server-local' && !gen._local) return [];
+      const ext = gen._ext === '.mov' ? '.mov' : '.mp4';
       return [
         {
           id: 'video',
-          label: '動画 (MP4)',
-          run: () => triggerDownload(`/video/${gen.id}`, `${gen.id}.mp4`),
+          label: `動画 (${ext.slice(1).toUpperCase()})`,
+          run: () => triggerDownload(`/video/${gen.id}`, `${gen.id}${ext}`),
         },
         {
           id: 'audio-mp3',

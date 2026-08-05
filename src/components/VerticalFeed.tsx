@@ -48,11 +48,18 @@ function FeedItem({
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [progress, setProgress] = useState(0);
 
+  // JSON なしモードでは manifest に width/height が無いので、ポスター/動画の実寸で補う
+  const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
+
   const prompt = gen.prompt?.trim() ?? '';
   const title = gen.title && gen.title !== 'New Video' ? gen.title : '';
   const avatars = extractAvatars(prompt);
   // メディアカードの枠は manifest の縦横比で先に確保し、読み込み中のガタつきを防ぐ
-  const mediaRatio = gen.width > 0 && gen.height > 0 ? `${gen.width} / ${gen.height}` : '9 / 16';
+  const mediaRatio =
+    gen.width > 0 && gen.height > 0 ? `${gen.width} / ${gen.height}` : (naturalRatio ?? '9 / 16');
+  const measure = (w: number, h: number) => {
+    if (w > 0 && h > 0) setNaturalRatio(`${w} / ${h}`);
+  };
 
   useEffect(() => {
     if (!mountVideo || src) return;
@@ -165,12 +172,20 @@ function FeedItem({
             playsInline
             muted={!soundEnabled}
             preload="auto"
+            onLoadedMetadata={(e) =>
+              measure(e.currentTarget.videoWidth, e.currentTarget.videoHeight)
+            }
             onPlay={() => setPaused(false)}
             onPause={() => setPaused(true)}
             onClick={togglePlay}
           />
         ) : mountPoster && poster ? (
-          <img className="vfeed-poster" src={poster} alt="" />
+          <img
+            className="vfeed-poster"
+            src={poster}
+            alt=""
+            onLoad={(e) => measure(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+          />
         ) : (
           <div className="vfeed-poster" />
         )}
