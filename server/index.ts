@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
 import { resolveBinary } from './ffmpegPath.js';
@@ -486,9 +486,13 @@ function createApp(cfg: AppConfig) {
   // 参照フォルダの変更・列挙は端末内からだけ許可する。CORS はブラウザ経由の保護でしか
   // ないため、127.0.0.1 以外にバインドされた場合に備えて接続元アドレスで直接弾く。
   // （既定の 127.0.0.1 バインドでは接続元も常にループバックなので挙動は変わらない）
-  const requireLocalClient = createMiddleware(async (c, next) => {
+  function isLocalClient(c: Context): boolean {
     const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
-    if (!isLoopbackAddress(env?.incoming?.socket?.remoteAddress)) {
+    return isLoopbackAddress(env?.incoming?.socket?.remoteAddress);
+  }
+
+  const requireLocalClient = createMiddleware(async (c, next) => {
+    if (!isLocalClient(c)) {
       return c.json({ error: 'この操作はこの端末からのみ実行できます' }, 403);
     }
     await next();
@@ -506,7 +510,11 @@ function createApp(cfg: AppConfig) {
   }
 
   // ── 設定 API ────────────────────────────────────────────────────────────
-  app.get('/api/config', (c) => c.json(configStatus()));
+  // 端末外からの参照には絶対パスを含めない（閲覧に必要な件数・configured だけ返す）
+  app.get('/api/config', (c) => {
+    const status = configStatus();
+    return c.json(isLocalClient(c) ? status : { ...status, jsonDir: null, movDir: null });
+  });
 
   app.post('/api/config', requireLocalClient, async (c) => {
     // JSON リテラルの null・配列・数値も c.req.json() は通してしまうので、先に型を確かめる
