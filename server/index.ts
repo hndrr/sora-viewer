@@ -442,6 +442,32 @@ function videoPathFor(state: State, id: string): string | null {
   return null;
 }
 
+// 実ファイルの同一性を表す短い署名。参照フォルダを切り替えて同じ ID に別の動画が
+// 来た場合に、ブラウザ側/サーバー側どちらの古いキャッシュも使われないようにする。
+function mediaSignature(filePath: string): string | null {
+  try {
+    const st = fs.statSync(filePath);
+    return createHash('sha1')
+      .update(`${filePath}:${st.mtimeMs}:${st.size}`)
+      .digest('hex')
+      .slice(0, 16);
+  } catch {
+    return null;
+  }
+}
+
+// 同じ ID の古い署名のサムネイルを片付ける（署名付きにしたことで溜まらないように）
+function removeStaleThumbs(dir: string, id: string, keepName: string) {
+  const stale = new RegExp(`^${id}(-[0-9a-f]{16})?\\.jpg$`);
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name !== keepName && stale.test(name)) fs.rmSync(path.join(dir, name), { force: true });
+    }
+  } catch {
+    // 掃除に失敗しても本処理は続行する
+  }
+}
+
 function videoMimeFor(filePath: string): string {
   return path.extname(filePath).toLowerCase() === '.mov' ? 'video/quicktime' : 'video/mp4';
 }
@@ -482,6 +508,12 @@ function createApp(cfg: AppConfig) {
   const { state, thumbDir, configPath, distDir, ffmpeg, ffprobe } = cfg;
   const app = new Hono();
   app.use('*', cors({ origin: allowLocalCorsOrigin }));
+
+  // /api/* の応答は設定内容や接続元で変わるので、どこにも保存させない
+  app.use('/api/*', async (c, next) => {
+    await next();
+    c.res.headers.set('Cache-Control', 'no-store');
+  });
 
   // 参照フォルダの変更・列挙は端末内からだけ許可する。CORS はブラウザ経由の保護でしか
   // ないため、127.0.0.1 以外にバインドされた場合に備えて接続元アドレスで直接弾く。
@@ -590,9 +622,20 @@ function createApp(cfg: AppConfig) {
   app.get('/thumbnail/:id', async (c) => {
     const id = c.req.param('id');
     if (!isSafeMediaId(id)) return c.text('Invalid ID', 400);
-    const thumbPath = path.join(thumbDir, `${id}.jpg`);
     const videoPath = videoPathFor(state, id);
     if (!videoPath) return c.notFound();
+    const sig = mediaSignature(videoPath);
+    if (!sig) return c.notFound();
+
+    // URL は ID 固定なので、中身が変わったかは ETag（署名）で判定させる
+    const etag = `"${sig}"`;
+    const cacheHeaders = { ETag: etag, 'Cache-Control': 'no-cache' };
+    if (c.req.header('if-none-match') === etag) {
+      return new Response(null, { status: 304, headers: cacheHeaders });
+    }
+
+    const thumbName = `${id}-${sig}.jpg`;
+    const thumbPath = path.join(thumbDir, thumbName);
     if (!fs.existsSync(thumbPath)) {
       try {
         await generateThumbnail(ffmpeg, videoPath, thumbPath);
@@ -600,13 +643,11 @@ function createApp(cfg: AppConfig) {
         console.error(`Thumbnail generation failed for ${id}:`, e);
         return c.text('Thumbnail generation failed', 500);
       }
+      removeStaleThumbs(thumbDir, id, thumbName);
     }
     const data = fs.readFileSync(thumbPath);
     return new Response(data, {
-      headers: {
-        'Content-Type': 'image/jpeg',
-        'Cache-Control': 'public, max-age=86400',
-      },
+      headers: { 'Content-Type': 'image/jpeg', ...cacheHeaders },
     });
   });
 
@@ -690,7 +731,15 @@ function createApp(cfg: AppConfig) {
     if (!fp) return c.notFound();
     const mime = videoMimeFor(fp);
     const size = fs.statSync(fp).size;
+    // ID は同じでも参照フォルダを変えれば別の動画になりうるので、必ず再検証させる
+    const sig = mediaSignature(fp);
+    const validators: Record<string, string> = sig
+      ? { ETag: `"${sig}"`, 'Cache-Control': 'no-cache' }
+      : { 'Cache-Control': 'no-store' };
     const range = c.req.header('range');
+    if (!range && sig && c.req.header('if-none-match') === `"${sig}"`) {
+      return new Response(null, { status: 304, headers: validators });
+    }
     if (range) {
       const parsedRange = parseVideoRange(range, size);
       if (!parsedRange) return c.text('Range Not Satisfiable', 416);
@@ -704,6 +753,7 @@ function createApp(cfg: AppConfig) {
           'Content-Range': `bytes ${start}-${end}/${size}`,
           'Content-Length': String(chunk),
           'Accept-Ranges': 'bytes',
+          ...validators,
         },
       });
     }
@@ -713,6 +763,7 @@ function createApp(cfg: AppConfig) {
         'Content-Type': mime,
         'Content-Length': String(size),
         'Accept-Ranges': 'bytes',
+        ...validators,
       },
     });
   });
