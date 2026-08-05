@@ -48,7 +48,14 @@ function dirExists(p?: string): boolean {
   }
 }
 
-function readConfigFile(p: string): { jsonDir?: string; movDir?: string } {
+/** 保存される設定。jsonDisabled は「JSON を明示的に使わない」選択の記録 */
+interface SavedConfig {
+  jsonDir?: string;
+  movDir?: string;
+  jsonDisabled?: boolean;
+}
+
+function readConfigFile(p: string): SavedConfig {
   try {
     const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -57,7 +64,7 @@ function readConfigFile(p: string): { jsonDir?: string; movDir?: string } {
   }
 }
 
-function writeConfigFile(p: string, data: { jsonDir?: string; movDir?: string }) {
+function writeConfigFile(p: string, data: SavedConfig) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(data, null, 2));
@@ -385,6 +392,8 @@ function mimeFor(filePath: string): string {
 interface State {
   /** 未設定なら mov フォルダだけのマニフェストになる */
   jsonDir?: string;
+  /** 設定画面で「クリア」された状態。true の間は起動時の JSON フォルダ自動検出も行わない */
+  jsonDisabled?: boolean;
   movDir?: string;
   /** ID → 動画の実ファイル。マニフェスト構築時に作り直す */
   movIndex: Map<string, MovFile>;
@@ -479,13 +488,15 @@ function createApp(cfg: AppConfig) {
       .json()
       .catch(() => ({}) as { jsonDir?: string | null; movDir?: string });
     if (body.jsonDir !== undefined) {
-      // 空文字 / null は「JSON を使わない」の意味
+      // 空文字 / null は「JSON を使わない」の意味。次回起動時に json/ を拾い直さないよう記録する
       if (!body.jsonDir) {
         state.jsonDir = undefined;
+        state.jsonDisabled = true;
       } else if (!dirExists(body.jsonDir)) {
         return c.json({ error: `JSON フォルダが存在しません: ${body.jsonDir}` }, 400);
       } else {
         state.jsonDir = path.resolve(body.jsonDir);
+        state.jsonDisabled = false;
       }
     }
     if (body.movDir !== undefined) {
@@ -501,6 +512,7 @@ function createApp(cfg: AppConfig) {
     writeConfigFile(configPath, {
       jsonDir: state.jsonDir,
       movDir: state.movDir,
+      jsonDisabled: state.jsonDisabled || undefined,
     });
     return c.json(configStatus());
   });
@@ -683,12 +695,16 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
     for (const c of cands) if (dirExists(c)) return path.resolve(c!);
     return undefined;
   };
-  const jsonDir = firstExisting(
-    saved.jsonDir,
-    opts.jsonDir,
-    process.env.SORA_JSON_DIR,
-    path.join(ROOT_DIR, 'json'),
-  );
+  // 設定画面で JSON を外していたら自動検出もしない（外したのに json/ が復活しないように）
+  const jsonDisabled = saved.jsonDisabled === true;
+  const jsonDir = jsonDisabled
+    ? undefined
+    : firstExisting(
+        saved.jsonDir,
+        opts.jsonDir,
+        process.env.SORA_JSON_DIR,
+        path.join(ROOT_DIR, 'json'),
+      );
   const movDir = firstExisting(
     saved.movDir,
     opts.movDir,
@@ -708,7 +724,7 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
 
   // mov フォルダだけあれば起動できる（JSON はプロンプト等のメタ情報用で任意）
   const configured = dirExists(movDir);
-  const state: State = { jsonDir, movDir, movIndex: new Map(), manifest: [] };
+  const state: State = { jsonDir, jsonDisabled, movDir, movIndex: new Map(), manifest: [] };
   if (configured) refreshManifest(state);
   else console.log('ℹ データ未設定。設定画面で mov フォルダを指定してください（JSON は任意）。');
 
